@@ -113,26 +113,13 @@ public:
     virtual const char *what() const throw() {return "Unsupported wire type"; }
 };
 
-/* */
-int64_t zigzagDecode(uint64_t n)
-{
-    if (n & 1)
-    {
-        // Negative
-        return -(n >> 1) - 1;
-    }
-    else
-    {
-        // Positive
-        return n >> 1;
-    }
-}
-
+/* Represents a data buffer to be parsed as protobuff. */
 class ProtoBuf
 {
     Buffer buf;
     size_t ptr;
 
+    /* Reads single byte from the buffer. */
     uint8_t getByte()
     {
         if (ptr >= buf.n) throw BufferOverflowException();
@@ -142,6 +129,7 @@ class ProtoBuf
 
 public:
 
+    /* Reads more bytes */
     void readBytes(uint8_t *bytes, size_t n)
     {
         for (size_t i = 0; i < n; i++)
@@ -150,6 +138,10 @@ public:
         }
     }
 
+    /* Reads varint.
+        When the high bit is set, it indicates there are more bytes to be read.
+        The low 7 bits encode the the payload in little endian order.
+     */
     uint64_t readVarInt()
     {
         uint64_t result = 0;
@@ -166,6 +158,7 @@ public:
         return result;
     }
 
+    /* Construct from pointer and length. */
     ProtoBuf(uint8_t *buf, size_t n)
     {
         this->buf.buf = buf;
@@ -173,6 +166,7 @@ public:
         ptr = 0;
     }
 
+    /* Construct from protobuff message. */
     ProtoBuf(const Message &msg)
     {
         if (msg.type != WireType::LENGTH_PREFIXED) throw InvalidArgumentException("Not a length prefixed message.");
@@ -182,10 +176,13 @@ public:
         ptr = 0;
     }
 
+    /* Number of bytes left  to read. */
     size_t getBytesLeft() {return buf.n - ptr; }
 
+    /* Position in buffer.  */
     size_t getBufPos() {return ptr;}
 
+    /* Reads a message from the buffer. */
     Message getMessage()
     {
         uint64_t messageTag = readVarInt();
@@ -233,11 +230,13 @@ public:
         return msg;
     }
 
+    /* Gets the address the current byte (for debugging). */
     uint8_t *getptr() {return buf.buf + ptr;}
 
 
 };
 
+/* To dump message for debugging. */
 void dumpMessage(const Message &msg)
 {
     printf("Message tag: %d\n", msg.tag);
@@ -265,6 +264,7 @@ void dumpMessage(const Message &msg)
     }
 }
 
+/* Represents the info about the pokémon. */
 struct PokemonInfo
 {
     int id;
@@ -272,15 +272,16 @@ struct PokemonInfo
     int baseAtk;
     int baseDef;
     int baseStamina;
-    std::vector<int> fastMoves;
-    std::vector<int> chargedMoves;
-    int types[2];
+    std::vector<int> fastMoves; // Ids of fast moves
+    std::vector<int> chargedMoves; // Ids of charged moves
+    int types[2]; // Ids of the two pokémon types.
     //------ Computed info
     double maxCP;
-    double tankiness;
-    double trueStrength;
+    double tankiness; // base attack times base defense (perfect IV assumed)
+    double trueStrength; // product of all the 3 base stats.  (perfect IV assumed)
 };
 
+/* Info about the moves. */
 struct MoveInfo
 {
     int id;
@@ -295,25 +296,115 @@ struct MoveInfo
     double dpe; // Damage per energy
 };
 
+/* Pokémon + moveset tuple and their properties. */
 struct MovesetDPS
 {
     int pokemonId;
     int fastId;
     int chargedId;
-    double DPS;
-    double msDPS;
-    double truePower;
+    double DPS; // Moveset DPS * attack
+    double msDPS; // Moveset DPS
+    double truePower; // Moveset DPS * trueStrength
 };
 
-std::map<int, PokemonInfo> pokemonList;
-std::map<int, MoveInfo> moveList;
-std::map<int, std::string> typeNames;
-std::map<int, std::map<int, float>> typeChart;
+std::map<int, PokemonInfo> pokemonList; // List of pokémon
+std::map<int, MoveInfo> moveList; // List of moves
+std::map<int, std::string> typeNames; // Names of types
+std::map<int, std::map<int, float>> typeChart; // Type chart
 
-std::map<std::string, bool> filtered;
+std::map<std::string, bool> filtered; // Pokémon to ignore in the calculations.
+
+std::map<std::string, int> pokemonNameToId; // Map pokémon names to Ids.
+std::map<std::string, int> moveNameToId; // Map moves to Ids.
+
+enum class PogoProtoTag
+{
+    ITEM_TEMPLATE = 2,
+};
+
+enum class ItemTemplateTag
+{
+    ITEM_NAME = 1,
+    POKEMON_DETAILS = 2,
+    MOVE_DETAILS = 4,
+    POKEMON_TYPE_DETAILS = 8
+};
+
+enum class PokemonDetailsTag
+{
+    PRIMARY_TYPE = 4,
+    SECONDARY_TYPE = 5,
+    BASE_STATS = 8,
+    QUICK_MOVES = 9,
+    CHARGED_MOVES = 10
+};
+
+enum class BaseStatsTag
+{
+    STAMINA = 1,
+    ATTACK = 2,
+    DEFENSE = 3
+};
+
+enum class MoveDetailsTag
+{
+    TYPE = 3,
+    POWER = 4,
+    DURATION = 12,
+    ENERGY = 15
+};
+
+enum class TypeDetailsTag
+{
+    TYPE_CHART = 1,
+    ID = 2
+};
+
+void addLegacyMove(
+    const char *pokemonName,
+    const char *moveName
+)
+{
+    if (pokemonNameToId.find(pokemonName) == pokemonNameToId.end())
+    {
+        printf("No such pokemon: %s\n", pokemonName);
+        throw InvalidArgumentException("No such pokemon");
+    }
+    if (moveNameToId.find(moveName) == moveNameToId.end())
+    {
+        printf("No such move: %s\n", moveName);
+        throw InvalidArgumentException("No such move.");
+    }
+
+    const MoveInfo &moveInfo = moveList[moveNameToId[moveName]];
+
+    if (moveInfo.energy <= 0)
+    {
+        pokemonList[pokemonNameToId[pokemonName]].chargedMoves.push_back(moveNameToId[moveName]);
+    }
+    else
+    {
+        pokemonList[pokemonNameToId[pokemonName]].fastMoves.push_back(moveNameToId[moveName]);
+    }
+}
 
 int main(int argc, char **argv)
 {
+    // Check endianness to warn the user the the program is not prepared to run on big endian.
+    {
+        uint8_t endiannessCheck[4] = {0, 1, 2, 3};
+        uint32_t test;
+
+        memcpy(&test, endiannessCheck, 4);
+
+        if (test != 0x03020100)
+        {
+            printf("ERROR: Your machine is not little endian. This program is not perpared to run on machines with different endianness.\n");
+            return 1;
+        }
+    }
+
+
     // Check args.
     if (argc < 2)
     {
@@ -334,6 +425,7 @@ int main(int argc, char **argv)
     filtered["MEWTWO"] = true;
     filtered["RAIKOU"] = true;
     filtered["CELEBI"] = true;
+    filtered["SUICINE"] = true;
 
     // Load file to a vector
     AutoFile f = fopen(argv[1], "rb");
@@ -357,7 +449,7 @@ int main(int argc, char **argv)
     {
         Message msg = pb.getMessage();
 
-        if ((msg.type == WireType::LENGTH_PREFIXED) && (msg.tag == 2))
+        if ((msg.type == WireType::LENGTH_PREFIXED) && ((PogoProtoTag)msg.tag == PogoProtoTag::ITEM_TEMPLATE))
         {
             ProtoBuf subProto(msg);
             Message name;
@@ -367,12 +459,12 @@ int main(int argc, char **argv)
             {
                 Message msg2 = subProto.getMessage();
 
-                switch (msg2.tag)
+                switch ((ItemTemplateTag)msg2.tag)
                 {
-                    case 1: name = msg2; break;
-                    case 2:
-                    case 4:
-                    case 8:
+                    case ItemTemplateTag::ITEM_NAME: name = msg2; break;
+                    case ItemTemplateTag::POKEMON_DETAILS:
+                    case ItemTemplateTag::MOVE_DETAILS:
+                    case ItemTemplateTag::POKEMON_TYPE_DETAILS:
                         details = msg2; break;
                 }
             }
@@ -400,15 +492,15 @@ int main(int argc, char **argv)
                 {
                     Message msg3 = pokemonInfoBuf.getMessage();
 
-                    switch (msg3.tag)
+                    switch ((PokemonDetailsTag)msg3.tag)
                     {
-                        case 4: // Primary type.
+                        case PokemonDetailsTag::PRIMARY_TYPE:
                             pi.types[0] = msg3.data.varInt;
                             break;
-                        case 5: // Secondary type.
+                        case PokemonDetailsTag::SECONDARY_TYPE:
                             pi.types[1] = msg3.data.varInt;
                             break;
-                        case 8: // Base stats proto.
+                        case PokemonDetailsTag::BASE_STATS:
                         {
                             ProtoBuf baseStatsBuf(msg3);
 
@@ -417,17 +509,17 @@ int main(int argc, char **argv)
                                 Message msg4 = baseStatsBuf.getMessage();
                                 if (msg4.type == WireType::VARINT)
                                 {
-                                    switch (msg4.tag)
+                                    switch ((BaseStatsTag)msg4.tag)
                                     {
-                                        case 1: pi.baseStamina = msg4.data.varInt; break;
-                                        case 2: pi.baseAtk = msg4.data.varInt; break;
-                                        case 3: pi.baseDef = msg4.data.varInt; break;
+                                        case BaseStatsTag::STAMINA: pi.baseStamina = msg4.data.varInt; break;
+                                        case BaseStatsTag::ATTACK: pi.baseAtk = msg4.data.varInt; break;
+                                        case BaseStatsTag::DEFENSE: pi.baseDef = msg4.data.varInt; break;
                                     }
                                 }
                             }
                             break;
                         }
-                        case 9: // Quick moves.
+                        case PokemonDetailsTag::QUICK_MOVES:
                         {
                             ProtoBuf fastMoves(msg3);
 
@@ -438,7 +530,7 @@ int main(int argc, char **argv)
                             }
                             break;
                         }
-                        case 10: // Charged moves.
+                        case PokemonDetailsTag::CHARGED_MOVES:
                         {
                             ProtoBuf chargedMoves(msg3);
 
@@ -468,6 +560,8 @@ int main(int argc, char **argv)
                 for (unsigned i = 0; i < pi.chargedMoves.size(); i++) printf("%d ", pi.chargedMoves[i]);
                 printf("\n");
                 pokemonList[id] = pi;
+
+                pokemonNameToId[pi.name] = id;
             }
 
             if (std::regex_search(template_str, match, movePattern))
@@ -486,18 +580,18 @@ int main(int argc, char **argv)
                 {
                     Message msg3 = moveDetails.getMessage();
 
-                    switch (msg3.tag)
+                    switch ((MoveDetailsTag)msg3.tag)
                     {
-                        case 3: // Type of the move.
+                        case MoveDetailsTag::TYPE:
                             mi.moveType = msg3.data.varInt;
                             break;
-                        case 4: // The power of the move.
+                        case MoveDetailsTag::POWER:
                             memcpy(&mi.power, msg3.data.fixed, 4);
                             break;
-                        case 12:  // Duration
+                        case MoveDetailsTag::DURATION:
                             mi.duration = msg3.data.varInt / 1000.0;
                             break;
-                        case 15: // Energy
+                        case MoveDetailsTag::ENERGY:
                             mi.energy = (int64_t)msg3.data.varInt;
                             break;
 
@@ -515,6 +609,8 @@ int main(int argc, char **argv)
                 printf("erergy: %d\n", mi.energy);
                 printf("moveType: %d\n", mi.moveType);
                 moveList[id] = mi;
+
+                moveNameToId[mi.name] = id;
             }
 
             if (std::regex_search(template_str, match, typePattern))
@@ -529,9 +625,9 @@ int main(int argc, char **argv)
                 {
                     Message msg3 = typeDetails.getMessage();
 
-                    switch (msg3.tag)
+                    switch ((TypeDetailsTag)msg3.tag)
                     {
-                        case 1: // Type chart
+                        case TypeDetailsTag::TYPE_CHART: // Type chart
                             {
                                 int index = 1;
                                 ProtoBuf damageTable(msg3);
@@ -550,7 +646,7 @@ int main(int argc, char **argv)
                                 }
                             }
                             break;
-                        case 2: // Type id
+                        case TypeDetailsTag::ID: // Type id
                             id = msg3.data.varInt;
                             printf("It's id: %d\n", id);
                             break;
@@ -563,8 +659,110 @@ int main(int argc, char **argv)
         }
     }
 
-    //pokemonList[149].fastMoves.push_back(204); // Inject dragon breath for dragonite.
-    //pokemonList[149].chargedMoves.push_back(83); // Inject dragon claw for dragonite.
+    // Set up legacy movesets.
+
+    addLegacyMove("CHARMELEON", "SCRATCH_FAST");
+
+    addLegacyMove("CHARIZARD", "WING_ATTACK_FAST");
+    addLegacyMove("CHARIZARD", "EMBER_FAST");
+    addLegacyMove("CHARIZARD", "FLAMETHROWER");
+    addLegacyMove("BUTTERFREE", "BUG_BITE_FAST");
+    addLegacyMove("BEEDRILL", "BUG_BITE_FAST");
+    addLegacyMove("PIDGEOT", "WING_ATTACK_FAST");
+    addLegacyMove("PIDGEOT", "AIR_CUTTER");
+    addLegacyMove("SPEAROW", "TWISTER");
+    addLegacyMove("FEAROW", "TWISTER");
+    addLegacyMove("EKANS", "GUNK_SHOT");
+    addLegacyMove("PIKACHU", "THUNDER");
+    addLegacyMove("RAICHU", "THUNDER_SHOCK_FAST");
+    addLegacyMove("RAICHU", "THUNDER");
+    addLegacyMove("SANDSHREW", "ROCK_TOMB");
+    addLegacyMove("NIDOKING", "FURY_CUTTER_FAST");
+    addLegacyMove("CLEFABLE", "POUND_FAST");
+    addLegacyMove("NINETALES", "EMBER_FAST");
+    addLegacyMove("NINETALES", "FLAMETHROWER");
+    addLegacyMove("NINETALES", "FIRE_BLAST");
+    addLegacyMove("ZUBAT", "SLUDGE_BOMB");
+    addLegacyMove("GOLBAT", "OMINOUS_WIND");
+    addLegacyMove("PERSIAN", "NIGHT_SLASH");
+    addLegacyMove("PRIMEAPE", "KARATE_CHOP_FAST");
+    addLegacyMove("PRIMEAPE", "CROSS_CHOP");
+    addLegacyMove("ARCANINE", "BITE_FAST");
+    addLegacyMove("ARCANINE", "BULLDOZE");
+    addLegacyMove("ARCANINE", "FLAMETHROWER");
+    addLegacyMove("POLIWHIRL", "SCALD");
+    addLegacyMove("POLIWRATH", "MUD_SHOT_FAST");
+    addLegacyMove("POLIWRATH", "SUBMISSION");
+    addLegacyMove("ALAKAZAM", "PSYCHIC");
+    addLegacyMove("ALAKAZAM", "DAZZLING_GLEAM");
+    addLegacyMove("MACHOP", "LOW_KICK_FAST");
+    addLegacyMove("MACHOKE", "CROSS_CHOP");
+    addLegacyMove("MACHAMP", "CROSS_CHOP");
+    addLegacyMove("MACHAMP", "SUBMISSION");
+    addLegacyMove("MACHAMP", "STONE_EDGE");
+    addLegacyMove("MACHAMP", "KARATE_CHOP_FAST");
+    addLegacyMove("WEEPINBELL", "RAZOR_LEAF_FAST");
+    addLegacyMove("GRAVELER", "ROCK_SLIDE");
+    addLegacyMove("GOLEM", "ANCIENT_POWER");
+    addLegacyMove("PONYTA", "FIRE_BLAST");
+    addLegacyMove("RAPIDASH", "EMBER_FAST");
+    addLegacyMove("MAGNETON", "THUNDER_SHOCK_FAST");
+    addLegacyMove("MAGNETON", "DISCHARGE");
+    addLegacyMove("FARFETCHD", "CUT_FAST");
+    addLegacyMove("DODUO", "SWIFT");
+    addLegacyMove("DODUO", "SWIFT");
+    addLegacyMove("DODRIO", "AIR_CUTTER");
+    addLegacyMove("SEEL", "AQUA_JET");
+    addLegacyMove("DEWGONG", "ICE_SHARD_FAST");
+    addLegacyMove("DEWGONG", "AQUA_JET");
+    addLegacyMove("DEWGONG", "ICY_WIND");
+    addLegacyMove("MUK", "LICK_FAST");
+    addLegacyMove("CLOYSTER", "ICY_WIND");
+    addLegacyMove("CLOYSTER", "BLIZZARD");
+    addLegacyMove("GASTLY", "SUCKER_PUNCH_FAST");
+    addLegacyMove("GASTLY", "OMINOUS_WIND");
+    addLegacyMove("HAUNTER", "LICK_FAST");
+    addLegacyMove("HAUNTER", "SHADOW_BALL");
+    addLegacyMove("GENGAR", "SHADOW_CLAW_FAST");
+    addLegacyMove("GENGAR", "DARK_PULSE");
+    addLegacyMove("ONIX", "IRON_HEAD");
+    addLegacyMove("ONIX", "ROCK_SLIDE");
+    addLegacyMove("HYPNO", "PSYSHOCK");
+    addLegacyMove("HYPNO", "SHADOW_BALL");
+    addLegacyMove("KINGLER", "MUD_SHOT_FAST");
+    addLegacyMove("VOLTORB", "SIGNAL_BEAM");
+    addLegacyMove("ELECTRODE", "TACKLE_FAST");
+    addLegacyMove("EXEGGUTOR", "ZEN_HEADBUTT_FAST");
+    addLegacyMove("EXEGGUTOR", "CONFUSION_FAST");
+    addLegacyMove("HITMONLEE", "BRICK_BREAK");
+    addLegacyMove("HITMONCHAN", "BRICK_BREAK");
+    addLegacyMove("HITMONCHAN", "ROCK_SMASH_FAST");
+    addLegacyMove("TANGELA", "POWER_WHIP");
+    addLegacyMove("SCYTHER", "STEEL_WING_FAST");
+    addLegacyMove("SCYTHER", "BUG_BUZZ");
+    addLegacyMove("JYNX", "POUND_FAST");
+    addLegacyMove("JYNX", "ICE_PUNCH");
+    addLegacyMove("PINSIR", "FURY_CUTTER_FAST");
+    addLegacyMove("PINSIR", "SUBMISSION");
+    addLegacyMove("GYARADOS", "TWISTER");
+    addLegacyMove("GYARADOS", "DRAGON_PULSE");
+    addLegacyMove("LAPRAS", "DRAGON_PULSE");
+    addLegacyMove("LAPRAS", "ICE_SHARD_FAST");
+    addLegacyMove("EEVEE", "BODY_SLAM");
+    addLegacyMove("FLAREON", "HEAT_WAVE");
+    addLegacyMove("PORYGON", "TACKLE_FAST");
+    addLegacyMove("PORYGON", "ZEN_HEADBUTT_FAST");
+    addLegacyMove("PORYGON", "DISCHARGE");
+    addLegacyMove("PORYGON", "SIGNAL_BEAM");
+    addLegacyMove("PORYGON", "PSYBEAM");
+    addLegacyMove("OMANYTE", "ROCK_TOMB");
+    addLegacyMove("OMANYTE", "BRINE");
+    addLegacyMove("OMASTAR", "ROCK_SLIDE");
+    addLegacyMove("KABUTOPS", "FURY_CUTTER_FAST");
+    addLegacyMove("SNORLAX", "BODY_SLAM");
+    addLegacyMove("DRAGONITE", "DRAGON_BREATH_FAST");
+    addLegacyMove("DRAGONITE", "DRAGON_CLAW");
+    addLegacyMove("DRAGONITE", "DRAGON_PULSE");
 
     // Type chart
     for (const auto &i : typeChart)
@@ -578,7 +776,7 @@ int main(int argc, char **argv)
 
     // Pokemon by CP
     {
-        std::vector<PokemonInfo> pis;
+        std::vector<PokemonInfo> pis; // A temporary vector to sort.
 
         for (const auto &pi : pokemonList)
         {
@@ -635,7 +833,7 @@ int main(int argc, char **argv)
         "DPE"
     );
 
-    std::vector<MoveInfo> moveByName;
+    std::vector<MoveInfo> moveByName; // To store the list of moves alphabetically.
     for (const auto &mip : moveList)
     {
         moveByName.push_back(mip.second);
@@ -659,12 +857,13 @@ int main(int argc, char **argv)
 
     // Pokemon info and moves
 
-    std::vector<MovesetDPS> overallMovesetStats;
+    std::vector<MovesetDPS> overallMovesetStats; // Single bucket to sort all moveset stats
     AutoFile pokemons = fopen("pokemonlist.txt", "w");
 
-    std::map<int, std::vector<MovesetDPS>> movesetStatsByType;
-    std::map<int, std::map<int, std::vector<MovesetDPS>>> bestCounters;
+    std::map<int, std::vector<MovesetDPS>> movesetStatsByType; // Moveset stats for each type
+    std::map<int, std::map<int, std::vector<MovesetDPS>>> bestCounters; // Moveset stats for each type combination (FIXME: the key should be a int, int tuple instead of this)
 
+    // For each pokémon...
     for (const auto &kv : pokemonList)
     {
         const PokemonInfo &pi = kv.second;
@@ -681,12 +880,14 @@ int main(int argc, char **argv)
         );
         fprintf(pokemons, "Fast moves: \n");
 
-        std::vector<MovesetDPS> movesetStats;
+        std::vector<MovesetDPS> pokemonMovesets; // Movesets of the pokémon.
 
+        // For each moveset combination...
         for (const auto &fmi : pi.fastMoves)
         {
             for (const auto &cmi : pi.chargedMoves)
             {
+                // Simulate hitting a punching bag for 1000 seconds.
                 MoveInfo &fastMove = moveList[fmi];
                 MoveInfo &chargedMove = moveList[cmi];
                 double energy = 0;
@@ -730,6 +931,7 @@ int main(int argc, char **argv)
 
                 MovesetDPS mDPS;
 
+                // Get the overall DPS.
                 double rawDps = damage / time;
 
                 mDPS.pokemonId = kv.first;
@@ -739,26 +941,27 @@ int main(int argc, char **argv)
                 mDPS.msDPS = rawDps;
                 mDPS.truePower = rawDps * pi.trueStrength;
 
-                movesetStats.push_back(mDPS);
+                // Store them for the pokémon and the overall bucket.
+                pokemonMovesets.push_back(mDPS);
                 overallMovesetStats.push_back(mDPS);
 
-                int fastMoveType = fastMove.moveType;
-
-                if (chargedMove.moveType == fastMoveType)
+                // TODO: Hidden power of all type.
+                // Put them into the typed buckets to find out
+                if (chargedMove.moveType == fastMove.moveType)
                 {
                     // Same type of damage
-                    movesetStatsByType[fastMoveType].push_back(mDPS);
+                    movesetStatsByType[fastMove.moveType].push_back(mDPS);
                 }
                 else
                 {
-                    // TODO: Copypaste
+                    // FIXME: Copypaste
                     // Fast and charged are different.
                     MovesetDPS primaryDPS = mDPS;
                     rawDps = primaryDamage / time;
                     primaryDPS.DPS = rawDps * pi.baseAtk;
                     primaryDPS.truePower = rawDps * pi.trueStrength;
                     primaryDPS.msDPS = rawDps;
-                    movesetStatsByType[fastMoveType].push_back(primaryDPS);
+                    movesetStatsByType[fastMove.moveType].push_back(primaryDPS);
 
                     MovesetDPS secondaryDPS = mDPS;
                     rawDps = secondaryDamage / time;
@@ -768,14 +971,19 @@ int main(int argc, char **argv)
                     movesetStatsByType[chargedMove.moveType].push_back(secondaryDPS);
                 }
 
+                // For each type combination...
                 for (const auto &tnp1 : typeChart)
                 {
                     for (const auto &tnp2: typeChart)
                     {
+                        if (tnp1.first > tnp2.first) continue; // To avoid duplicates.
+
+                        // Find out how much damage each moveset does against each combination of moves.
                         double theDamage;
 
                         if (tnp1.first == tnp2.first)
                         {
+                            // Single typed pokémon are stored as double typed of the same type. Mind this.
                             theDamage = primaryDamage * typeChart[fastMove.moveType][tnp1.first]
                             + secondaryDamage * typeChart[chargedMove.moveType][tnp1.first];
                         }
@@ -790,7 +998,6 @@ int main(int argc, char **argv)
                         dps.DPS = rawDps * pi.baseAtk;
                         dps.truePower = rawDps * pi.trueStrength;
                         dps.msDPS = rawDps;
-                        movesetStatsByType[fastMoveType].push_back(dps);
 
                         bestCounters[tnp1.first][tnp2.first].push_back(dps);
                     }
@@ -798,14 +1005,16 @@ int main(int argc, char **argv)
             }
         }
 
-        std::sort(movesetStats.begin(), movesetStats.end(), [](MovesetDPS a, MovesetDPS b){return a.DPS > b.DPS; });
-        for (const auto &mdps : movesetStats)
+        // Write out each pokémon and their respective moveset.
+        std::sort(pokemonMovesets.begin(), pokemonMovesets.end(), [](MovesetDPS a, MovesetDPS b){return a.DPS > b.DPS; });
+        for (const auto &mdps : pokemonMovesets)
         {
             fprintf(pokemons, "%s + %s : %g (%g)\n", moveList[mdps.fastId].name.c_str(), moveList[mdps.chargedId].name.c_str(), mdps.DPS, mdps.msDPS);
         }
         fprintf(pokemons, "\n");
     }
 
+    // Write the overall DPS list.
     AutoFile dpsList = fopen("dpslist.txt", "w");
     std::sort(overallMovesetStats.begin(), overallMovesetStats.end(), [](MovesetDPS a, MovesetDPS b){return a.DPS > b.DPS; });
     for (const auto &mdps : overallMovesetStats)
@@ -819,6 +1028,7 @@ int main(int argc, char **argv)
         );
     }
 
+    // Write the true power list.
     AutoFile tpsList = fopen("truepowerlist.txt", "w");
     std::sort(overallMovesetStats.begin(), overallMovesetStats.end(), [](MovesetDPS a, MovesetDPS b){return a.truePower > b.truePower; });
     for (const auto &mdps : overallMovesetStats)
@@ -831,6 +1041,7 @@ int main(int argc, char **argv)
         );
     }
 
+    // Best DPS by Type
     AutoFile bestAttackersByType = fopen("bestDPSbyType.txt", "w");
     for (auto &typeVecPair : movesetStatsByType)
     {
@@ -854,7 +1065,7 @@ int main(int argc, char **argv)
         fprintf(bestAttackersByType, "\n\n");
     }
 
-
+    // Write best true power by type.
     AutoFile bestTruePowerByType = fopen("bestTruePowerByType.txt", "w");
     for (auto &typeVecPair : movesetStatsByType)
     {
@@ -878,6 +1089,7 @@ int main(int argc, char **argv)
         fprintf(bestTruePowerByType, "\n\n");
     }
 
+    // Write best counters by DPS
     AutoFile bestDPSCountersFile = fopen("bestDPSCounters.txt", "w");
     for (auto &t1 : bestCounters)
     {
@@ -895,10 +1107,10 @@ int main(int argc, char **argv)
         {
             const auto &vec = t2.second;
 
-            fprintf(bestDPSCountersFile, "Best counters of %s-%s\n", typeNames[t1.first].c_str(), typeNames[t2.first].c_str());
+            fprintf(bestDPSCountersFile, "Best counters of %s-%s\n\n", typeNames[t1.first].c_str(), typeNames[t2.first].c_str());
             for (const auto &mdps : vec)
             {
-                fprintf(bestDPSCountersFile, "%s: %s + %s : %g\n",
+                fprintf(bestDPSCountersFile, "- %s: %s + %s : %g\n",
                     pokemonList[mdps.pokemonId].name.c_str(),
                     moveList[mdps.fastId].name.c_str(),
                     moveList[mdps.chargedId].name.c_str(),
@@ -909,6 +1121,7 @@ int main(int argc, char **argv)
         }
     }
 
+    // Write Best counters by True power
     AutoFile bestTPCountersFile = fopen("bestTruePowerCounters.txt", "w");
     for (auto &t1 : bestCounters)
     {
@@ -926,10 +1139,10 @@ int main(int argc, char **argv)
         {
             const auto &vec = t2.second;
 
-            fprintf(bestTPCountersFile, "Best counters of %s-%s\n", typeNames[t1.first].c_str(), typeNames[t2.first].c_str());
+            fprintf(bestTPCountersFile, "Best counters of %s-%s\n\n", typeNames[t1.first].c_str(), typeNames[t2.first].c_str());
             for (const auto &mdps : vec)
             {
-                fprintf(bestTPCountersFile, "%s: %s + %s : %g\n",
+                fprintf(bestTPCountersFile, "- %s: %s + %s : %g\n",
                     pokemonList[mdps.pokemonId].name.c_str(),
                     moveList[mdps.fastId].name.c_str(),
                     moveList[mdps.chargedId].name.c_str(),
