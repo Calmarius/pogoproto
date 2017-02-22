@@ -274,6 +274,9 @@ struct PokemonInfo
     int baseStamina;
     std::vector<int> fastMoves; // Ids of fast moves
     std::vector<int> chargedMoves; // Ids of charged moves
+    size_t nAvailableFastMoves;
+    size_t nAvailableChargedMoves;
+
     int types[2]; // Ids of the two pokémon types.
     //------ Computed info
     double maxCP;
@@ -302,6 +305,7 @@ struct MovesetDPS
     int pokemonId;
     int fastId;
     int chargedId;
+    bool isLegacy;
     double DPS; // Moveset DPS * attack
     double msDPS; // Moveset DPS
     double truePower; // Moveset DPS * trueStrength
@@ -425,7 +429,7 @@ int main(int argc, char **argv)
     filtered["MEWTWO"] = true;
     filtered["RAIKOU"] = true;
     filtered["CELEBI"] = true;
-    filtered["SUICINE"] = true;
+    filtered["SUICUNE"] = true;
 
     // Load file to a vector
     AutoFile f = fopen(argv[1], "rb");
@@ -487,6 +491,7 @@ int main(int argc, char **argv)
                 printf("Pokémon found: id: #%d, name: %s\n", id, pi.name.c_str());
 
                 ProtoBuf pokemonInfoBuf(details);
+                bool hasSecondaryType = false;
 
                 while (pokemonInfoBuf.getBytesLeft())
                 {
@@ -498,6 +503,7 @@ int main(int argc, char **argv)
                             pi.types[0] = msg3.data.varInt;
                             break;
                         case PokemonDetailsTag::SECONDARY_TYPE:
+                            hasSecondaryType = true;
                             pi.types[1] = msg3.data.varInt;
                             break;
                         case PokemonDetailsTag::BASE_STATS:
@@ -543,6 +549,11 @@ int main(int argc, char **argv)
                         }
                     }
                 }
+
+                if (!hasSecondaryType) pi.types[1] = pi.types[0];
+
+                pi.nAvailableChargedMoves = pi.chargedMoves.size();
+                pi.nAvailableFastMoves = pi.fastMoves.size();
 
                 pi.id = id;
                 pi.maxCP = ((pi.baseAtk + 15) * sqrt(pi.baseDef  + 15) * sqrt(pi.baseStamina + 15) * 0.79030001 * 0.79030001)/10.0;
@@ -653,7 +664,7 @@ int main(int argc, char **argv)
                     }
                 }
 
-                typeNames[id] = std::string((const char*)name.data.subMessage.buf, name.data.subMessage.n);
+                typeNames[id] = match[1].str();
                 typeChart[id] = typeEffeciveness;
             }
         }
@@ -662,7 +673,6 @@ int main(int argc, char **argv)
     // Set up legacy movesets.
 
     addLegacyMove("CHARMELEON", "SCRATCH_FAST");
-
     addLegacyMove("CHARIZARD", "WING_ATTACK_FAST");
     addLegacyMove("CHARIZARD", "EMBER_FAST");
     addLegacyMove("CHARIZARD", "FLAMETHROWER");
@@ -883,10 +893,12 @@ int main(int argc, char **argv)
         std::vector<MovesetDPS> pokemonMovesets; // Movesets of the pokémon.
 
         // For each moveset combination...
-        for (const auto &fmi : pi.fastMoves)
+        for (size_t i = 0; i < pi.fastMoves.size(); i++)
         {
-            for (const auto &cmi : pi.chargedMoves)
+            int fmi = pi.fastMoves[i];
+            for (size_t j = 0; j < pi.chargedMoves.size(); j++)
             {
+                int cmi = pi.chargedMoves[j];
                 // Simulate hitting a punching bag for 1000 seconds.
                 MoveInfo &fastMove = moveList[fmi];
                 MoveInfo &chargedMove = moveList[cmi];
@@ -895,6 +907,8 @@ int main(int argc, char **argv)
                 double damage = 0;
                 double primaryDamage = 0;
                 double secondaryDamage = 0;
+
+                bool legacy = (i >= pi.nAvailableFastMoves) || (j >= pi.nAvailableChargedMoves);
 
                 while (time < 1000)
                 {
@@ -940,6 +954,7 @@ int main(int argc, char **argv)
                 mDPS.DPS = rawDps * pi.baseAtk;
                 mDPS.msDPS = rawDps;
                 mDPS.truePower = rawDps * pi.trueStrength;
+                mDPS.isLegacy = legacy;
 
                 // Store them for the pokémon and the overall bucket.
                 pokemonMovesets.push_back(mDPS);
@@ -1009,7 +1024,7 @@ int main(int argc, char **argv)
         std::sort(pokemonMovesets.begin(), pokemonMovesets.end(), [](MovesetDPS a, MovesetDPS b){return a.DPS > b.DPS; });
         for (const auto &mdps : pokemonMovesets)
         {
-            fprintf(pokemons, "%s + %s : %g (%g)\n", moveList[mdps.fastId].name.c_str(), moveList[mdps.chargedId].name.c_str(), mdps.DPS, mdps.msDPS);
+            fprintf(pokemons, "%s + %s : %g (%g) %s\n", moveList[mdps.fastId].name.c_str(), moveList[mdps.chargedId].name.c_str(), mdps.DPS, mdps.msDPS, mdps.isLegacy ? "(*)" : "");
         }
         fprintf(pokemons, "\n");
     }
@@ -1019,12 +1034,13 @@ int main(int argc, char **argv)
     std::sort(overallMovesetStats.begin(), overallMovesetStats.end(), [](MovesetDPS a, MovesetDPS b){return a.DPS > b.DPS; });
     for (const auto &mdps : overallMovesetStats)
     {
-        fprintf(dpsList, "%s: %s + %s : %g (%g)\n",
+        fprintf(dpsList, "%s: %s + %s : %g (%g) %s\n",
             pokemonList[mdps.pokemonId].name.c_str(),
             moveList[mdps.fastId].name.c_str(),
             moveList[mdps.chargedId].name.c_str(),
             mdps.DPS,
-            mdps.msDPS
+            mdps.msDPS,
+            mdps.isLegacy ? "(*)" : ""
         );
     }
 
@@ -1033,11 +1049,12 @@ int main(int argc, char **argv)
     std::sort(overallMovesetStats.begin(), overallMovesetStats.end(), [](MovesetDPS a, MovesetDPS b){return a.truePower > b.truePower; });
     for (const auto &mdps : overallMovesetStats)
     {
-        fprintf(tpsList, "%s: %s + %s : %g\n",
+        fprintf(tpsList, "%s: %s + %s : %g %s\n",
             pokemonList[mdps.pokemonId].name.c_str(),
             moveList[mdps.fastId].name.c_str(),
             moveList[mdps.chargedId].name.c_str(),
-            mdps.truePower
+            mdps.truePower,
+            mdps.isLegacy ? "(*)" : ""
         );
     }
 
@@ -1055,11 +1072,12 @@ int main(int argc, char **argv)
         fprintf(bestAttackersByType, "Best attackers of %s type:\n\n", typeNames[typeVecPair.first].c_str());
         for (const auto &mdps : typeVecPair.second)
         {
-            fprintf(bestAttackersByType, "%s: %s + %s : %g\n",
+            fprintf(bestAttackersByType, "%s: %s + %s : %g %s\n",
                 pokemonList[mdps.pokemonId].name.c_str(),
                 moveList[mdps.fastId].name.c_str(),
                 moveList[mdps.chargedId].name.c_str(),
-                mdps.DPS /*/ typeVecPair.second[0].DPS * 100*/
+                mdps.DPS,
+                mdps.isLegacy ? "(*)" : ""
             );
         }
         fprintf(bestAttackersByType, "\n\n");
@@ -1079,11 +1097,12 @@ int main(int argc, char **argv)
         fprintf(bestTruePowerByType, "Best attackers of %s type:\n\n", typeNames[typeVecPair.first].c_str());
         for (const auto &mdps : typeVecPair.second)
         {
-            fprintf(bestTruePowerByType, "%s: %s + %s : %g\n",
+            fprintf(bestTruePowerByType, "%s: %s + %s : %g %s\n",
                 pokemonList[mdps.pokemonId].name.c_str(),
                 moveList[mdps.fastId].name.c_str(),
                 moveList[mdps.chargedId].name.c_str(),
-                mdps.truePower /*/ typeVecPair.second[0].truePower * 100*/
+                mdps.truePower,
+                mdps.isLegacy ? "(*)" : ""
             );
         }
         fprintf(bestTruePowerByType, "\n\n");
@@ -1110,11 +1129,12 @@ int main(int argc, char **argv)
             fprintf(bestDPSCountersFile, "Best counters of %s-%s\n\n", typeNames[t1.first].c_str(), typeNames[t2.first].c_str());
             for (const auto &mdps : vec)
             {
-                fprintf(bestDPSCountersFile, "- %s: %s + %s : %g\n",
+                fprintf(bestDPSCountersFile, "- %s: %s + %s : %g %s\n",
                     pokemonList[mdps.pokemonId].name.c_str(),
                     moveList[mdps.fastId].name.c_str(),
                     moveList[mdps.chargedId].name.c_str(),
-                    mdps.DPS /*/ typeVecPair.second[0].truePower * 100*/
+                    mdps.DPS,
+                    mdps.isLegacy ? "(*)" : ""
                 );
             }
             fprintf(bestDPSCountersFile, "\n\n");
@@ -1142,11 +1162,12 @@ int main(int argc, char **argv)
             fprintf(bestTPCountersFile, "Best counters of %s-%s\n\n", typeNames[t1.first].c_str(), typeNames[t2.first].c_str());
             for (const auto &mdps : vec)
             {
-                fprintf(bestTPCountersFile, "- %s: %s + %s : %g\n",
+                fprintf(bestTPCountersFile, "- %s: %s + %s : %g %s\n",
                     pokemonList[mdps.pokemonId].name.c_str(),
                     moveList[mdps.fastId].name.c_str(),
                     moveList[mdps.chargedId].name.c_str(),
-                    mdps.truePower /*/ typeVecPair.second[0].truePower * 100*/
+                    mdps.truePower,
+                    mdps.isLegacy ? "(*)" : ""
                 );
             }
             fprintf(bestTPCountersFile, "\n\n");
