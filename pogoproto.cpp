@@ -282,6 +282,7 @@ struct PokemonInfo
     double maxCP;
     double tankiness; // base attack times base defense (perfect IV assumed)
     double trueStrength; // product of all the 3 base stats.  (perfect IV assumed)
+    double prestigePotential;
 };
 
 /* Info about the moves. */
@@ -299,17 +300,28 @@ struct MoveInfo
     double dpe; // Damage per energy
 };
 
-/* Pokémon + moveset tuple and their properties. */
-struct MovesetDPS
+std::string removeFast(const std::string &name)
 {
-    int pokemonId;
-    int fastId;
-    int chargedId;
-    bool isLegacy;
-    double DPS; // Moveset DPS * attack
-    double msDPS; // Moveset DPS
-    double truePower; // Moveset DPS * trueStrength
-};
+    std::string result = name;
+
+    for (int i = 0; i < 5; i++) result.pop_back();
+
+    return result;
+}
+
+std::string normalizeName(const std::string &name)
+{
+    std::string result;
+
+    for (size_t i = 0; i < name.size(); i++)
+    {
+        if (i == 0) result.push_back(name[i]);
+        else if (name[i] == '_') result.push_back(' ');
+        else result.push_back(name[i] + 32);
+    }
+
+    return result;
+}
 
 std::map<int, PokemonInfo> pokemonList; // List of pokémon
 std::map<int, MoveInfo> moveList; // List of moves
@@ -320,6 +332,39 @@ std::map<std::string, bool> filtered; // Pokémon to ignore in the calculations.
 
 std::map<std::string, int> pokemonNameToId; // Map pokémon names to Ids.
 std::map<std::string, int> moveNameToId; // Map moves to Ids.
+
+/* Pokémon + moveset tuple and their properties. */
+struct MovesetDPS
+{
+    int pokemonId;
+    int fastId;
+    int chargedId;
+    bool isLegacy;
+    double DPS; // Moveset DPS * attack
+    double msDPS; // Moveset DPS
+    double truePower; // Moveset DPS * trueStrength
+    double prestigePower; // Moveset DPS * prestigePotential
+
+    void populate(const double rawDPS, const PokemonInfo &pi)
+    {
+        msDPS = rawDPS;
+        DPS = rawDPS * (pi.baseAtk + 15);
+        truePower = rawDPS * pi.trueStrength;
+        prestigePower = rawDPS * pi.prestigePotential;
+    }
+
+    void printEntry(FILE *f, double value) const
+    {
+        fprintf(f, "- %s: %s + %s : %g  (msDPS: %g) %s\n",
+            normalizeName(pokemonList[pokemonId].name).c_str(),
+            normalizeName(removeFast(moveList[fastId].name)).c_str(),
+            normalizeName(moveList[chargedId].name).c_str(),
+            value,
+            msDPS,
+            isLegacy ? "(*)" : ""
+        );
+    }
+};
 
 enum class PogoProtoTag
 {
@@ -372,12 +417,12 @@ void addLegacyMove(
     if (pokemonNameToId.find(pokemonName) == pokemonNameToId.end())
     {
         printf("No such pokemon: %s\n", pokemonName);
-        throw InvalidArgumentException("No such pokemon");
+        return;
     }
     if (moveNameToId.find(moveName) == moveNameToId.end())
     {
         printf("No such move: %s\n", moveName);
-        throw InvalidArgumentException("No such move.");
+        return;
     }
 
     const MoveInfo &moveInfo = moveList[moveNameToId[moveName]];
@@ -408,12 +453,24 @@ int main(int argc, char **argv)
         }
     }
 
+    const char *legacyFile;
+
 
     // Check args.
     if (argc < 2)
     {
-        printf("Usage: %s game_master_filename\n", argv[0]);
+        printf("Usage: %s game_master_filename legacy_moves_file\n", argv[0]);
+        printf("\n");
+        printf("Legacy file is optional if you are not interested in legacy moves.\n");
+        printf("If you do, then you should add the pokémon name and the move name, as you can find in the protobuff.");
+        printf("For example: DRAGONITE DRAGON_BREATH_FAST\n");
+        printf("One pokémon + move entry per line.\n");
         return 1;
+    }
+
+    if (argc >= 3)
+    {
+        legacyFile = argv[2];
     }
 
     // Filter legendaries.
@@ -556,7 +613,8 @@ int main(int argc, char **argv)
                 pi.nAvailableFastMoves = pi.fastMoves.size();
 
                 pi.id = id;
-                pi.maxCP = ((pi.baseAtk + 15) * sqrt(pi.baseDef  + 15) * sqrt(pi.baseStamina + 15) * 0.79030001 * 0.79030001)/10.0;
+                pi.prestigePotential = sqrt((pi.baseDef + 15) * (pi.baseStamina + 15));
+                pi.maxCP = ((pi.baseAtk + 15) * pi.prestigePotential * 0.79030001 * 0.79030001)/10.0;
                 pi.tankiness = (pi.baseDef + 15) * (pi.baseStamina + 15);
                 pi.trueStrength = (pi.baseAtk + 15) * pi.tankiness / 10000.0;
 
@@ -951,9 +1009,7 @@ int main(int argc, char **argv)
                 mDPS.pokemonId = kv.first;
                 mDPS.fastId = fmi;
                 mDPS.chargedId = cmi;
-                mDPS.DPS = rawDps * pi.baseAtk;
-                mDPS.msDPS = rawDps;
-                mDPS.truePower = rawDps * pi.trueStrength;
+                mDPS.populate(rawDps, pi);
                 mDPS.isLegacy = legacy;
 
                 // Store them for the pokémon and the overall bucket.
@@ -972,17 +1028,11 @@ int main(int argc, char **argv)
                     // FIXME: Copypaste
                     // Fast and charged are different.
                     MovesetDPS primaryDPS = mDPS;
-                    rawDps = primaryDamage / time;
-                    primaryDPS.DPS = rawDps * pi.baseAtk;
-                    primaryDPS.truePower = rawDps * pi.trueStrength;
-                    primaryDPS.msDPS = rawDps;
+                    primaryDPS.populate(primaryDamage / time, pi);
                     movesetStatsByType[fastMove.moveType].push_back(primaryDPS);
 
                     MovesetDPS secondaryDPS = mDPS;
-                    rawDps = secondaryDamage / time;
-                    secondaryDPS.DPS = rawDps * pi.baseAtk;
-                    secondaryDPS.truePower = rawDps * pi.trueStrength;
-                    secondaryDPS.msDPS = rawDps;
+                    secondaryDPS.populate(secondaryDamage / time, pi);
                     movesetStatsByType[chargedMove.moveType].push_back(secondaryDPS);
                 }
 
@@ -1009,11 +1059,7 @@ int main(int argc, char **argv)
                                 + secondaryDamage * typeChart[chargedMove.moveType][tnp1.first] * typeChart[chargedMove.moveType][tnp2.first];
                         }
                         MovesetDPS dps = mDPS;
-                        rawDps = theDamage / time;
-                        dps.DPS = rawDps * pi.baseAtk;
-                        dps.truePower = rawDps * pi.trueStrength;
-                        dps.msDPS = rawDps;
-
+                        dps.populate(theDamage / time, pi);
                         bestCounters[tnp1.first][tnp2.first].push_back(dps);
                     }
                 }
@@ -1024,42 +1070,29 @@ int main(int argc, char **argv)
         std::sort(pokemonMovesets.begin(), pokemonMovesets.end(), [](MovesetDPS a, MovesetDPS b){return a.DPS > b.DPS; });
         for (const auto &mdps : pokemonMovesets)
         {
-            fprintf(pokemons, "%s + %s : %g (%g) %s\n", moveList[mdps.fastId].name.c_str(), moveList[mdps.chargedId].name.c_str(), mdps.DPS, mdps.msDPS, mdps.isLegacy ? "(*)" : "");
+            mdps.printEntry(pokemons, mdps.DPS);
         }
         fprintf(pokemons, "\n");
     }
 
     // Write the overall DPS list.
-    AutoFile dpsList = fopen("dpslist.txt", "w");
+    AutoFile dpsList = fopen("DPS.txt", "w");
     std::sort(overallMovesetStats.begin(), overallMovesetStats.end(), [](MovesetDPS a, MovesetDPS b){return a.DPS > b.DPS; });
     for (const auto &mdps : overallMovesetStats)
     {
-        fprintf(dpsList, "%s: %s + %s : %g (%g) %s\n",
-            pokemonList[mdps.pokemonId].name.c_str(),
-            moveList[mdps.fastId].name.c_str(),
-            moveList[mdps.chargedId].name.c_str(),
-            mdps.DPS,
-            mdps.msDPS,
-            mdps.isLegacy ? "(*)" : ""
-        );
+        mdps.printEntry(dpsList, mdps.DPS);
     }
 
     // Write the true power list.
-    AutoFile tpsList = fopen("truepowerlist.txt", "w");
+    AutoFile dtfList = fopen("DTF.txt", "w");
     std::sort(overallMovesetStats.begin(), overallMovesetStats.end(), [](MovesetDPS a, MovesetDPS b){return a.truePower > b.truePower; });
     for (const auto &mdps : overallMovesetStats)
     {
-        fprintf(tpsList, "%s: %s + %s : %g %s\n",
-            pokemonList[mdps.pokemonId].name.c_str(),
-            moveList[mdps.fastId].name.c_str(),
-            moveList[mdps.chargedId].name.c_str(),
-            mdps.truePower,
-            mdps.isLegacy ? "(*)" : ""
-        );
+        mdps.printEntry(dtfList, mdps.truePower);
     }
 
     // Best DPS by Type
-    AutoFile bestAttackersByType = fopen("bestDPSbyType.txt", "w");
+    AutoFile bestAttackersByType = fopen("DPSbyType.txt", "w");
     for (auto &typeVecPair : movesetStatsByType)
     {
         auto &typeVec = typeVecPair.second;
@@ -1072,19 +1105,13 @@ int main(int argc, char **argv)
         fprintf(bestAttackersByType, "Best attackers of %s type:\n\n", typeNames[typeVecPair.first].c_str());
         for (const auto &mdps : typeVecPair.second)
         {
-            fprintf(bestAttackersByType, "%s: %s + %s : %g %s\n",
-                pokemonList[mdps.pokemonId].name.c_str(),
-                moveList[mdps.fastId].name.c_str(),
-                moveList[mdps.chargedId].name.c_str(),
-                mdps.DPS,
-                mdps.isLegacy ? "(*)" : ""
-            );
+            mdps.printEntry(bestAttackersByType, mdps.DPS);
         }
         fprintf(bestAttackersByType, "\n\n");
     }
 
     // Write best true power by type.
-    AutoFile bestTruePowerByType = fopen("bestTruePowerByType.txt", "w");
+    AutoFile bestDTFByType = fopen("DTFbyType.txt", "w");
     for (auto &typeVecPair : movesetStatsByType)
     {
         auto &typeVec = typeVecPair.second;
@@ -1094,22 +1121,16 @@ int main(int argc, char **argv)
 
     for (const auto &typeVecPair : movesetStatsByType)
     {
-        fprintf(bestTruePowerByType, "Best attackers of %s type:\n\n", typeNames[typeVecPair.first].c_str());
+        fprintf(bestDTFByType, "Best attackers of %s type:\n\n", typeNames[typeVecPair.first].c_str());
         for (const auto &mdps : typeVecPair.second)
         {
-            fprintf(bestTruePowerByType, "%s: %s + %s : %g %s\n",
-                pokemonList[mdps.pokemonId].name.c_str(),
-                moveList[mdps.fastId].name.c_str(),
-                moveList[mdps.chargedId].name.c_str(),
-                mdps.truePower,
-                mdps.isLegacy ? "(*)" : ""
-            );
+            mdps.printEntry(bestDTFByType, mdps.truePower);
         }
-        fprintf(bestTruePowerByType, "\n\n");
+        fprintf(bestDTFByType, "\n\n");
     }
 
     // Write best counters by DPS
-    AutoFile bestDPSCountersFile = fopen("bestDPSCounters.txt", "w");
+    AutoFile bestDPSCountersFile = fopen("DPSCounters.txt", "w");
     for (auto &t1 : bestCounters)
     {
         for (auto &t2 : t1.second)
@@ -1129,20 +1150,14 @@ int main(int argc, char **argv)
             fprintf(bestDPSCountersFile, "Best counters of %s-%s\n\n", typeNames[t1.first].c_str(), typeNames[t2.first].c_str());
             for (const auto &mdps : vec)
             {
-                fprintf(bestDPSCountersFile, "- %s: %s + %s : %g %s\n",
-                    pokemonList[mdps.pokemonId].name.c_str(),
-                    moveList[mdps.fastId].name.c_str(),
-                    moveList[mdps.chargedId].name.c_str(),
-                    mdps.DPS,
-                    mdps.isLegacy ? "(*)" : ""
-                );
+                mdps.printEntry(bestDPSCountersFile, mdps.DPS);
             }
             fprintf(bestDPSCountersFile, "\n\n");
         }
     }
 
     // Write Best counters by True power
-    AutoFile bestTPCountersFile = fopen("bestTruePowerCounters.txt", "w");
+    AutoFile bestDTFCountersFile = fopen("DTFCounters.txt", "w");
     for (auto &t1 : bestCounters)
     {
         for (auto &t2 : t1.second)
@@ -1159,18 +1174,39 @@ int main(int argc, char **argv)
         {
             const auto &vec = t2.second;
 
-            fprintf(bestTPCountersFile, "Best counters of %s-%s\n\n", typeNames[t1.first].c_str(), typeNames[t2.first].c_str());
+            fprintf(bestDTFCountersFile, "Best counters of %s-%s\n\n", typeNames[t1.first].c_str(), typeNames[t2.first].c_str());
             for (const auto &mdps : vec)
             {
-                fprintf(bestTPCountersFile, "- %s: %s + %s : %g %s\n",
-                    pokemonList[mdps.pokemonId].name.c_str(),
-                    moveList[mdps.fastId].name.c_str(),
-                    moveList[mdps.chargedId].name.c_str(),
-                    mdps.truePower,
-                    mdps.isLegacy ? "(*)" : ""
-                );
+                mdps.printEntry(bestDTFCountersFile, mdps.truePower);
             }
-            fprintf(bestTPCountersFile, "\n\n");
+            fprintf(bestDTFCountersFile, "\n\n");
+        }
+    }
+
+    // Best prestigers
+    AutoFile prestigersFile = fopen("prestigers.txt", "w");
+    for (auto &t1 : bestCounters)
+    {
+        for (auto &t2 : t1.second)
+        {
+            auto &vec = t2.second;
+
+            std::sort(vec.begin(), vec.end(), [](MovesetDPS a, MovesetDPS b){return a.prestigePower > b.prestigePower; });
+        }
+    }
+
+    for (const auto &t1 : bestCounters)
+    {
+        for (const auto &t2 : t1.second)
+        {
+            const auto &vec = t2.second;
+
+            fprintf(prestigersFile, "Best counters of %s-%s\n\n", typeNames[t1.first].c_str(), typeNames[t2.first].c_str());
+            for (const auto &mdps : vec)
+            {
+                mdps.printEntry(prestigersFile, mdps.prestigePower);
+            }
+            fprintf(bestDTFCountersFile, "\n\n");
         }
     }
 
