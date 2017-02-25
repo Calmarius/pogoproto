@@ -444,27 +444,40 @@ void addLegacyMove(
 
 const double LEVEL30_CP_MULTIPLIER = 0.7317;
 const double LEVEL40_CP_MULTIPLIER = 0.79030001;
+const char *POKEMON_LIST_FILE = "pokemonlist.txt";
 
-const double BATTLE_TIME = 100;
 const double ATTACKER_CPM = LEVEL30_CP_MULTIPLIER; // Corresponding CP multiplier for level 30 pokémon.
-const double PRESTIGER_CP = 1500; // The desired CP of the prestiger.
 
 struct
 {
     const char *gameMasterFile;
-    double roundLength;// How often the opponent strikes.
+    double roundLength; // How often the opponent strikes.
+    double battleTime; // How long life assumed.
+    double prestigerCP; // The desired CP of the prestiger.
+    const char *filteredPokemon; // List of pokemon to filter out. eg. legendaries or other unobtainable stuff.
 } conf = {0};
 
 struct Option
 {
     int nParameters;
-    const char *helpText;
+    std::string helpText;
     int (*handler)(char **argv);
 };
 
 typedef int (*OptHandlerFunc)(const char *option);
 
 std::map<std::string, Option> options;
+
+void printHelp()
+{
+    printf("USAGE:\n\npogoproto filename [options]\n\n");
+    printf("OPTIONS:\n\n");
+
+    for (const auto &opt : options)
+    {
+        puts(opt.second.helpText.c_str());
+    }
+}
 
 int main(int argc, char **argv)
 {
@@ -482,25 +495,90 @@ int main(int argc, char **argv)
         }
     }
 
-    // Check args.
-    if (argc < 2)
-    {
-        printf("Usage: %s game_master_filename legacy_moves_file [other options]\n", argv[0]);
-        printf("\n\n");
-
-        return 1;
-    }
+    // Set up options.
+    conf.gameMasterFile = NULL;
+    conf.roundLength = 2.5;
+    conf.battleTime = 100;
+    conf.prestigerCP = 1500;
+    conf.filteredPokemon = NULL;
 
     {
-        Option *option = &options["-rl"];
+        Option *option;
+
+        option = &options["-rl"];
         option->nParameters = 1;
         option->handler = [](char **argv)
         {
-            conf.roundLength = strtod(argv[0], NULL);
+            conf.roundLength = strtod(argv[1], NULL);
             printf("Using round length: %g\n", conf.roundLength);
             return 0;
         };
-        option->helpText = "-rl roundLength: Specify how fast the opponent pokémon attacks in seconds. ";
+        {
+            std::stringstream tmp;
+            tmp << "-rl roundLength\n\n";
+            tmp << "\tSpecify how fast the opponent pokémon attacks in seconds. \n\n";
+            tmp << "\tThe simulation assumes the players dodges the attacks. This determines how often the attacks come.\n";
+            tmp << "\tDefault: " << conf.roundLength << "\n";
+            option->helpText = tmp.str();
+        }
+
+        option = &options["-bt"];
+        option->nParameters = 1;
+        option->handler = [](char **argv)
+        {
+            conf.battleTime = strtol(argv[1], NULL, 10);
+            printf("Using battle time: %g\n", conf.battleTime);
+            return 0;
+        };
+        {
+            std::stringstream tmp;
+            tmp << "-bt battleTime\n\n";
+            tmp << "\tSpecify how long lifetime do you expect for your pokémon during battle.\n\n";
+            tmp << "\tThis is important when dealing with the energy received from the damage your pokémon take.\n";
+            tmp << "\tDefault: " << conf.battleTime << "\n";
+            option->helpText = tmp.str();
+        }
+
+        option = &options["-pcp"];
+        option->nParameters = 1;
+        option->handler = [](char **argv)
+        {
+            conf.prestigerCP = strtod(argv[1], NULL);
+            printf("Preferred prestiger CP: %g\n", conf.prestigerCP);
+            return 0;
+        };
+        {
+            std::stringstream tmp;
+            tmp << "-pcp prestigerCP\n\n";
+            tmp << "\tThe preferred prestiger CP you want to use, when comparing prestigers.\n\n";
+            tmp << "\tPokémon that cannot reach the specified CP will not be listed in the prestiger list.\n";
+            tmp << "\tDefault: " <<  conf.prestigerCP << "\n";
+            option->helpText = tmp.str();
+        }
+
+        option = &options["-filtered"];
+        option->nParameters = 1;
+        option->handler = [](char **argv)
+        {
+            conf.filteredPokemon = argv[1];
+            printf("Filtering unwanted pokemon using file: %s\n", conf.filteredPokemon);
+            return 0;
+        };
+        {
+            std::stringstream tmp;
+            tmp << "-filtered file\n\n";
+            tmp << "\tList of pokemon to filter out.\n\n";
+            tmp << "\tEach line in the file must contain a pokemon name as it appears in the decoded protobuff.\n";
+            tmp << "\tSee " << POKEMON_LIST_FILE << " for the possible names.\n";
+            option->helpText = tmp.str();
+        }
+    }
+
+    // Check args.
+    if (argc < 2)
+    {
+        printHelp();
+        return 1;
     }
 
     // Parse options.
@@ -524,29 +602,42 @@ int main(int argc, char **argv)
             if (i + opt->second.nParameters >= argc)
             {
                 fprintf(stderr, "Missing parameter for option %s\n", opt->first.c_str());
+                return 1;
             }
             else
             {
-                opt->second.handler(argv + i + 1);
+                if (opt->second.handler(argv + i))
+                {
+                    fprintf(stderr, "Error in option %s\n", opt->first.c_str());
+                    return 1;
+                }
                 i += opt->second.nParameters;
             }
         }
     }
 
     // Filter legendaries.
-    filtered["ENTEI"] = true;
-    filtered["LUGIA"] = true;
-    filtered["SUICINE"] = true;
-    filtered["ARTICUNO"] = true;
-    filtered["MOLTRES"] = true;
-    filtered["ZAPDOS"] = true;
-    filtered["LUGIA"] = true;
-    filtered["HO_OH"] = true;
-    filtered["MEW"] = true;
-    filtered["MEWTWO"] = true;
-    filtered["RAIKOU"] = true;
-    filtered["CELEBI"] = true;
-    filtered["SUICUNE"] = true;
+    if (conf.filteredPokemon)
+    {
+        AutoFile f = fopen(conf.filteredPokemon, "r");
+
+        // Continue here.
+
+
+        filtered["ENTEI"] = true;
+        filtered["LUGIA"] = true;
+        filtered["SUICINE"] = true;
+        filtered["ARTICUNO"] = true;
+        filtered["MOLTRES"] = true;
+        filtered["ZAPDOS"] = true;
+        filtered["LUGIA"] = true;
+        filtered["HO_OH"] = true;
+        filtered["MEW"] = true;
+        filtered["MEWTWO"] = true;
+        filtered["RAIKOU"] = true;
+        filtered["CELEBI"] = true;
+        filtered["SUICUNE"] = true;
+    }
 
     // Load file to a vector
     AutoFile f = fopen(conf.gameMasterFile, "rb");
@@ -669,13 +760,13 @@ int main(int argc, char **argv)
                 pi.id = id;
                 double CPBase = (pi.baseAtk + 15) * sqrt((pi.baseDef + 15) * (pi.baseStamina + 15));
                 pi.maxCP = CPBase * LEVEL40_CP_MULTIPLIER * LEVEL40_CP_MULTIPLIER / 10.0;
-                if (pi.maxCP < PRESTIGER_CP)
+                if (pi.maxCP < conf.prestigerCP)
                 {
                     pi.prestigerCPMultiplier = 0;
                 }
                 else
                 {
-                    pi.prestigerCPMultiplier = sqrt(PRESTIGER_CP * 10 / CPBase);
+                    pi.prestigerCPMultiplier = sqrt(conf.prestigerCP * 10 / CPBase);
                 }
                 pi.tankiness = (pi.baseDef + 15) * (pi.baseStamina + 15);
                 pi.trueStrength = (pi.baseAtk + 15) * pi.tankiness / 10000.0;
@@ -988,7 +1079,7 @@ int main(int argc, char **argv)
     // Pokemon info and moves
 
     std::vector<MovesetDPS> overallMovesetStats; // Single bucket to sort all moveset stats
-    AutoFile pokemons = fopen("pokemonlist.txt", "w");
+    AutoFile pokemons = fopen(POKEMON_LIST_FILE, "w");
 
     std::map<int, std::vector<MovesetDPS>> movesetStatsByType; // Moveset stats for each type
     std::map<int, std::map<int, std::vector<MovesetDPS>>> bestCounters; // Moveset stats for each type combination (FIXME: the key should be a int, int tuple instead of this)
@@ -1047,7 +1138,7 @@ int main(int argc, char **argv)
 
                 //printf("extraEnergy: %g\n", extraEnergy);
 
-                while (time < BATTLE_TIME)
+                while (time < conf.battleTime)
                 {
                     MoveInfo *moveToUse;
                     double *damageToRaise;
@@ -1092,7 +1183,7 @@ int main(int argc, char **argv)
                     *damageToRaise += moveToUse->power * stab * nConsecutiveHits;
                     time += moveToUse->duration * nConsecutiveHits;
                     energy += moveToUse->energy * nConsecutiveHits;
-                    energy += (moveToUse->duration / BATTLE_TIME) * extraEnergy * nConsecutiveHits;
+                    energy += (moveToUse->duration / conf.battleTime) * extraEnergy * nConsecutiveHits;
                     if (energy > 100) energy = 100;
                     //printf("%s used %s %d times (damage: %g, energy: %d, staminaEnergy: %g)\n", pi.name.c_str(), moveToUse->name.c_str(), nConsecutiveHits, moveToUse->power, moveToUse->energy, (moveToUse->duration / BATTLE_TIME) * extraEnergy);
                     //printf("t: %g, primary dmg: %g, secondary dmg: %g, energy: %g\n", time, primaryDamage, secondaryDamage, energy);
