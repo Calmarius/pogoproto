@@ -568,7 +568,7 @@ int main(int argc, char **argv)
             std::stringstream tmp;
             tmp << "-filtered file\n\n";
             tmp << "\tList of pokemon to filter out.\n\n";
-            tmp << "\tEach line in the file must contain a pokemon name as it appears in the decoded protobuff.\n";
+            tmp << "\tYou should use the same names as it appears in the protobuff (usually uppercase), separated by whitespace.\n";
             tmp << "\tSee " << POKEMON_LIST_FILE << " for the possible names.\n";
             option->helpText = tmp.str();
         }
@@ -615,28 +615,23 @@ int main(int argc, char **argv)
             }
         }
     }
+    if (conf.gameMasterFile == NULL)
+    {
+        fprintf(stderr, "No game master file provided!\n");
+        return 1;
+    }
 
     // Filter legendaries.
     if (conf.filteredPokemon)
     {
-        AutoFile f = fopen(conf.filteredPokemon, "r");
+        std::ifstream filters(conf.filteredPokemon);
+        std::string name;
 
-        // Continue here.
-
-
-        filtered["ENTEI"] = true;
-        filtered["LUGIA"] = true;
-        filtered["SUICINE"] = true;
-        filtered["ARTICUNO"] = true;
-        filtered["MOLTRES"] = true;
-        filtered["ZAPDOS"] = true;
-        filtered["LUGIA"] = true;
-        filtered["HO_OH"] = true;
-        filtered["MEW"] = true;
-        filtered["MEWTWO"] = true;
-        filtered["RAIKOU"] = true;
-        filtered["CELEBI"] = true;
-        filtered["SUICUNE"] = true;
+        while (filters >> name)
+        {
+            printf("Filtering %s\n", name.c_str());
+            filtered[name] = true;
+        }
     }
 
     // Load file to a vector
@@ -683,8 +678,6 @@ int main(int argc, char **argv)
 
             if ((name.type != WireType::LENGTH_PREFIXED) || (details.type != WireType::LENGTH_PREFIXED)) continue;
 
-            printf("%.*s\n", (int)name.data.subMessage.n, name.data.subMessage.buf);
-
             std::string template_str((const char *)name.data.subMessage.buf, name.data.subMessage.n);
             std::smatch match;
             if (std::regex_search(template_str, match, pokemonPattern))
@@ -696,7 +689,6 @@ int main(int argc, char **argv)
                 PokemonInfo pi;
 
                 pi.name = match[2].str();
-                printf("Pokémon found: id: #%d, name: %s\n", id, pi.name.c_str());
 
                 ProtoBuf pokemonInfoBuf(details);
 
@@ -771,16 +763,6 @@ int main(int argc, char **argv)
                 pi.tankiness = (pi.baseDef + 15) * (pi.baseStamina + 15);
                 pi.trueStrength = (pi.baseAtk + 15) * pi.tankiness / 10000.0;
 
-                printf("Name: %s\n", pi.name.c_str());
-                printf("STA: %d\n", pi.baseStamina);
-                printf("ATK: %d\n", pi.baseAtk);
-                printf("DEF: %d\n", pi.baseDef);
-                printf("Fast moves: ");
-                for (unsigned i = 0; i < pi.fastMoves.size(); i++) printf("%d ", pi.fastMoves[i]);
-                printf("\n");
-                printf("Charged moves: ");
-                for (unsigned i = 0; i < pi.chargedMoves.size(); i++) printf("%d ", pi.chargedMoves[i]);
-                printf("\n");
                 pokemonList[id] = pi;
 
                 pokemonNameToId[pi.name] = id;
@@ -795,8 +777,6 @@ int main(int argc, char **argv)
                 MoveInfo mi;
 
                 mi.name = match[2].str();
-
-                printf("Move found: id: #%d, name: %s\n", id, mi.name.c_str());
 
                 while (moveDetails.getBytesLeft())
                 {
@@ -825,11 +805,6 @@ int main(int argc, char **argv)
                 mi.dps = mi.power / mi.duration;
                 mi.dpe = mi.power / mi.energy;
 
-                printf("name: %s\n", mi.name.c_str());
-                printf("power: %g\n", mi.power);
-                printf("duration: %g\n", mi.duration);
-                printf("erergy: %d\n", mi.energy);
-                printf("moveType: %d\n", mi.moveType);
                 moveList[id] = mi;
 
                 moveNameToId[mi.name] = id;
@@ -861,7 +836,6 @@ int main(int argc, char **argv)
 
                                     damageTable.readBytes(bytes, 4);
                                     memcpy(&effectiveness, bytes, 4);
-                                    printf("Effectiveness %d, %g\n", index, effectiveness);
                                     typeEffeciveness[index] = effectiveness;
 
                                     index++;
@@ -870,7 +844,6 @@ int main(int argc, char **argv)
                             break;
                         case TypeDetailsTag::ID: // Type id
                             id = msg3.data.varInt;
-                            printf("It's id: %d\n", id);
                             break;
                     }
                 }
@@ -986,14 +959,14 @@ int main(int argc, char **argv)
     addLegacyMove("DRAGONITE", "DRAGON_PULSE");
 
     // Type chart
-    for (const auto &i : typeChart)
+    /*for (const auto &i : typeChart)
     {
         for (const auto &j : i.second)
         {
             if (j.second == 1) continue;
             printf("(%d)%s -> (%d)%s: %g\n", i.first, typeNames[i.first].c_str(), j.first, typeNames[j.first].c_str(), j.second);
         }
-    }
+    }*/
 
     // Pokemon by CP
     {
