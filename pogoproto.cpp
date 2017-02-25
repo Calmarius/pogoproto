@@ -1,6 +1,7 @@
 /* Compile this file with a C++11 compiler. */
 
 #include <stdio.h>
+#include <math.h>
 #include <fstream>
 #include <vector>
 #include <stdint.h>
@@ -277,12 +278,12 @@ struct PokemonInfo
     size_t nAvailableFastMoves;
     size_t nAvailableChargedMoves;
 
-    int types[2]; // Ids of the two pokémon types.
+    std::vector<int> pokemonTypes; // Ids of the two pokémon types.
     //------ Computed info
     double maxCP;
     double tankiness; // base attack times base defense (perfect IV assumed)
     double trueStrength; // product of all the 3 base stats.  (perfect IV assumed)
-    double prestigePotential;
+    double prestigerCPMultiplier;
 };
 
 /* Info about the moves. */
@@ -340,28 +341,32 @@ struct MovesetDPS
     int fastId;
     int chargedId;
     bool isLegacy;
+    bool dodging;
     double DPS; // Moveset DPS * attack
     double msDPS; // Moveset DPS
     double truePower; // Moveset DPS * trueStrength
     double prestigePower; // Moveset DPS * prestigePotential
+    int fastAttacksPerTurn;
 
     void populate(const double rawDPS, const PokemonInfo &pi)
     {
         msDPS = rawDPS;
         DPS = rawDPS * (pi.baseAtk + 15);
-        truePower = rawDPS * pi.trueStrength;
-        prestigePower = rawDPS * pi.prestigePotential;
+        truePower = rawDPS * pi.trueStrength * (dodging ? 1 : 0.25);
+        prestigePower = rawDPS * pi.trueStrength * pow(pi.prestigerCPMultiplier, 3);
     }
 
     void printEntry(FILE *f, double value) const
     {
-        fprintf(f, "- %s: %s + %s : %g  (msDPS: %g) %s\n",
+        fprintf(f, "- %s: %s + %s : %g  (msDPS: %g) %s %s (Fast attacks per turn: %d)\n",
             normalizeName(pokemonList[pokemonId].name).c_str(),
             normalizeName(removeFast(moveList[fastId].name)).c_str(),
             normalizeName(moveList[chargedId].name).c_str(),
             value,
             msDPS,
-            isLegacy ? "(*)" : ""
+            isLegacy ? "(*)" : "",
+            dodging ? "" : "(cannot dodge)",
+            fastAttacksPerTurn
         );
     }
 };
@@ -437,6 +442,30 @@ void addLegacyMove(
     }
 }
 
+const double LEVEL30_CP_MULTIPLIER = 0.7317;
+const double LEVEL40_CP_MULTIPLIER = 0.79030001;
+
+const double BATTLE_TIME = 100;
+const double ATTACKER_CPM = LEVEL30_CP_MULTIPLIER; // Corresponding CP multiplier for level 30 pokémon.
+const double PRESTIGER_CP = 1500; // The desired CP of the prestiger.
+
+struct
+{
+    const char *gameMasterFile;
+    double roundLength;// How often the opponent strikes.
+} conf = {0};
+
+struct Option
+{
+    int nParameters;
+    const char *helpText;
+    int (*handler)(char **argv);
+};
+
+typedef int (*OptHandlerFunc)(const char *option);
+
+std::map<std::string, Option> options;
+
 int main(int argc, char **argv)
 {
     // Check endianness to warn the user the the program is not prepared to run on big endian.
@@ -453,24 +482,55 @@ int main(int argc, char **argv)
         }
     }
 
-    const char *legacyFile;
-
-
     // Check args.
     if (argc < 2)
     {
-        printf("Usage: %s game_master_filename legacy_moves_file\n", argv[0]);
-        printf("\n");
-        printf("Legacy file is optional if you are not interested in legacy moves.\n");
-        printf("If you do, then you should add the pokémon name and the move name, as you can find in the protobuff.");
-        printf("For example: DRAGONITE DRAGON_BREATH_FAST\n");
-        printf("One pokémon + move entry per line.\n");
+        printf("Usage: %s game_master_filename legacy_moves_file [other options]\n", argv[0]);
+        printf("\n\n");
+
         return 1;
     }
 
-    if (argc >= 3)
     {
-        legacyFile = argv[2];
+        Option *option = &options["-rl"];
+        option->nParameters = 1;
+        option->handler = [](char **argv)
+        {
+            conf.roundLength = strtod(argv[0], NULL);
+            printf("Using round length: %g\n", conf.roundLength);
+            return 0;
+        };
+        option->helpText = "-rl roundLength: Specify how fast the opponent pokémon attacks in seconds. ";
+    }
+
+    // Parse options.
+    for (int i = 1; i < argc; i++)
+    {
+        const char *arg = argv[i];
+        auto opt = options.find(arg);
+
+        if (opt == options.end())
+        {
+            if (conf.gameMasterFile)
+            {
+                fprintf(stderr, "Unknown option: %s\n", arg);
+                return 1;
+            }
+            conf.gameMasterFile = arg;
+            printf("Will read from game master file: %s\n", conf.gameMasterFile);
+        }
+        else
+        {
+            if (i + opt->second.nParameters >= argc)
+            {
+                fprintf(stderr, "Missing parameter for option %s\n", opt->first.c_str());
+            }
+            else
+            {
+                opt->second.handler(argv + i + 1);
+                i += opt->second.nParameters;
+            }
+        }
     }
 
     // Filter legendaries.
@@ -489,7 +549,7 @@ int main(int argc, char **argv)
     filtered["SUICUNE"] = true;
 
     // Load file to a vector
-    AutoFile f = fopen(argv[1], "rb");
+    AutoFile f = fopen(conf.gameMasterFile, "rb");
     std::vector<uint8_t> message;
 
     fseek(f, 0, SEEK_END);
@@ -548,7 +608,6 @@ int main(int argc, char **argv)
                 printf("Pokémon found: id: #%d, name: %s\n", id, pi.name.c_str());
 
                 ProtoBuf pokemonInfoBuf(details);
-                bool hasSecondaryType = false;
 
                 while (pokemonInfoBuf.getBytesLeft())
                 {
@@ -557,11 +616,8 @@ int main(int argc, char **argv)
                     switch ((PokemonDetailsTag)msg3.tag)
                     {
                         case PokemonDetailsTag::PRIMARY_TYPE:
-                            pi.types[0] = msg3.data.varInt;
-                            break;
                         case PokemonDetailsTag::SECONDARY_TYPE:
-                            hasSecondaryType = true;
-                            pi.types[1] = msg3.data.varInt;
+                            pi.pokemonTypes.push_back(msg3.data.varInt);
                             break;
                         case PokemonDetailsTag::BASE_STATS:
                         {
@@ -607,14 +663,20 @@ int main(int argc, char **argv)
                     }
                 }
 
-                if (!hasSecondaryType) pi.types[1] = pi.types[0];
-
                 pi.nAvailableChargedMoves = pi.chargedMoves.size();
                 pi.nAvailableFastMoves = pi.fastMoves.size();
 
                 pi.id = id;
-                pi.prestigePotential = sqrt((pi.baseDef + 15) * (pi.baseStamina + 15));
-                pi.maxCP = ((pi.baseAtk + 15) * pi.prestigePotential * 0.79030001 * 0.79030001)/10.0;
+                double CPBase = (pi.baseAtk + 15) * sqrt((pi.baseDef + 15) * (pi.baseStamina + 15));
+                pi.maxCP = CPBase * LEVEL40_CP_MULTIPLIER * LEVEL40_CP_MULTIPLIER / 10.0;
+                if (pi.maxCP < PRESTIGER_CP)
+                {
+                    pi.prestigerCPMultiplier = 0;
+                }
+                else
+                {
+                    pi.prestigerCPMultiplier = sqrt(PRESTIGER_CP * 10 / CPBase);
+                }
                 pi.tankiness = (pi.baseDef + 15) * (pi.baseStamina + 15);
                 pi.trueStrength = (pi.baseAtk + 15) * pi.tankiness / 10000.0;
 
@@ -936,15 +998,21 @@ int main(int argc, char **argv)
     {
         const PokemonInfo &pi = kv.second;
 
-        fprintf(pokemons, "#%d %s (Type: %s, %s) (Max CP: %g, ATK: %d, DEF: %d, STA: %d)\n",
+        std::stringstream str;
+        for (auto tid : pi.pokemonTypes)
+        {
+            str << typeNames[tid] << " ";
+        }
+
+        fprintf(pokemons, "#%d %s (Type: %s) (Max CP: %g, ATK: %d, DEF: %d, STA: %d), prestiger CP multiplier: %g\n",
             pi.id,
             pi.name.c_str(),
-            typeNames[pi.types[0]].c_str(),
-            typeNames[pi.types[1]].c_str(),
+            str.str().c_str(),
             pi.maxCP,
             pi.baseAtk,
             pi.baseDef,
-            pi.baseStamina
+            pi.baseStamina,
+            pi.prestigerCPMultiplier
         );
         fprintf(pokemons, "Fast moves: \n");
 
@@ -966,39 +1034,77 @@ int main(int argc, char **argv)
                 double primaryDamage = 0;
                 double secondaryDamage = 0;
 
+                int expectedHitsPerTurn = floor((conf.roundLength - 0.5) / fastMove.duration);
+                bool dodging = expectedHitsPerTurn > 0;
+
+                if (!dodging) continue;
+
+                //printf("ExpectedHitsPerTurn: %d\n", expectedHitsPerTurn);
+
                 bool legacy = (i >= pi.nAvailableFastMoves) || (j >= pi.nAvailableChargedMoves);
 
-                while (time < 1000)
+                double extraEnergy = 0.5*((pi.baseStamina + 15) * ATTACKER_CPM);
+
+                //printf("extraEnergy: %g\n", extraEnergy);
+
+                while (time < BATTLE_TIME)
                 {
                     MoveInfo *moveToUse;
                     double *damageToRaise;
                     double stab = 1;
+                    int nConsecutiveHits;
+                    double remTime;
 
                     if (energy >= -chargedMove.energy)
                     {
                         // Do charged move.
                         moveToUse = &chargedMove;
                         damageToRaise = &secondaryDamage;
+                        nConsecutiveHits = 1;
                     }
                     else
                     {
                         // Do fast move
                         moveToUse = &fastMove;
                         damageToRaise = &primaryDamage;
+                        remTime = conf.roundLength - fmod(time, conf.roundLength);
+                        if (dodging)
+                        {
+                            nConsecutiveHits = floor(remTime / fastMove.duration);
+                            if (nConsecutiveHits > expectedHitsPerTurn) nConsecutiveHits = expectedHitsPerTurn;
+                        }
+                        else
+                        {
+                            nConsecutiveHits = 1;
+                        }
                     }
 
-                    if (
-                        (moveToUse->moveType == pi.types[0]) ||
-                        (moveToUse->moveType == pi.types[1])
-                    )
+                    for (int tid : pi.pokemonTypes)
                     {
-                        stab = 1.25;
+                        if (moveToUse->moveType == tid)
+                        {
+                            stab = 1.25;
+                            break;
+                        }
                     }
 
-                    damage += moveToUse->power * stab;
-                    *damageToRaise += moveToUse->power * stab;
-                    time += moveToUse->duration;
-                    energy += moveToUse->energy;
+                    damage += moveToUse->power * stab * nConsecutiveHits;
+                    *damageToRaise += moveToUse->power * stab * nConsecutiveHits;
+                    time += moveToUse->duration * nConsecutiveHits;
+                    energy += moveToUse->energy * nConsecutiveHits;
+                    energy += (moveToUse->duration / BATTLE_TIME) * extraEnergy * nConsecutiveHits;
+                    if (energy > 100) energy = 100;
+                    //printf("%s used %s %d times (damage: %g, energy: %d, staminaEnergy: %g)\n", pi.name.c_str(), moveToUse->name.c_str(), nConsecutiveHits, moveToUse->power, moveToUse->energy, (moveToUse->duration / BATTLE_TIME) * extraEnergy);
+                    //printf("t: %g, primary dmg: %g, secondary dmg: %g, energy: %g\n", time, primaryDamage, secondaryDamage, energy);
+                    if (dodging && moveToUse == &fastMove)
+                    {
+                        remTime -= moveToUse->duration * nConsecutiveHits;
+                        if (remTime < 0.5) remTime = 0.5;
+                        time += remTime; // Time spent dodging.
+                        //printf("Then dodged for %g seconds.\n", remTime);
+                        //printf("t: %g, primary dmg: %g, secondary dmg: %g, energy: %g\n", time, primaryDamage, secondaryDamage, energy);
+                    }
+                    //fgetc(stdin);
                 }
 
                 MovesetDPS mDPS;
@@ -1006,11 +1112,15 @@ int main(int argc, char **argv)
                 // Get the overall DPS.
                 double rawDps = damage / time;
 
+                /* printf("Moveset DPS: %g\n", rawDps); */
+
                 mDPS.pokemonId = kv.first;
                 mDPS.fastId = fmi;
                 mDPS.chargedId = cmi;
                 mDPS.populate(rawDps, pi);
                 mDPS.isLegacy = legacy;
+                mDPS.dodging = dodging;
+                mDPS.fastAttacksPerTurn = expectedHitsPerTurn;
 
                 // Store them for the pokémon and the overall bucket.
                 pokemonMovesets.push_back(mDPS);
