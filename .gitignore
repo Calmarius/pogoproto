@@ -2,3 +2,5 @@
 !*.cpp
 !README
 !.gitignore
+!filtered.conf
+!legacy.conf

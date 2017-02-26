@@ -445,17 +445,31 @@ void addLegacyMove(
 const double LEVEL30_CP_MULTIPLIER = 0.7317;
 const double LEVEL40_CP_MULTIPLIER = 0.79030001;
 const char *POKEMON_LIST_FILE = "pokemonlist.txt";
+const char *MOVE_LIST_FILE= "moves.txt";
 
 const double ATTACKER_CPM = LEVEL30_CP_MULTIPLIER; // Corresponding CP multiplier for level 30 pokémon.
 
-struct
+struct Config
 {
     const char *gameMasterFile;
     double roundLength; // How often the opponent strikes.
     double battleTime; // How long life assumed.
     double prestigerCP; // The desired CP of the prestiger.
     const char *filteredPokemon; // List of pokemon to filter out. eg. legendaries or other unobtainable stuff.
-} conf = {0};
+    const char *legacyMoves; // File containing legacy moves.
+    int highlightPokemonId; // Pokemon to highlight and write more stats to stdout when dumping.
+
+    Config()
+    {
+        gameMasterFile = NULL;
+        roundLength = 2.5;
+        battleTime = 100;
+        prestigerCP = 1500;
+        filteredPokemon = NULL;
+        legacyMoves = NULL;
+        highlightPokemonId = -1;
+    }
+} conf;
 
 struct Option
 {
@@ -496,11 +510,6 @@ int main(int argc, char **argv)
     }
 
     // Set up options.
-    conf.gameMasterFile = NULL;
-    conf.roundLength = 2.5;
-    conf.battleTime = 100;
-    conf.prestigerCP = 1500;
-    conf.filteredPokemon = NULL;
 
     {
         Option *option;
@@ -570,6 +579,48 @@ int main(int argc, char **argv)
             tmp << "\tList of pokemon to filter out.\n\n";
             tmp << "\tYou should use the same names as it appears in the protobuff (usually uppercase), separated by whitespace.\n";
             tmp << "\tSee " << POKEMON_LIST_FILE << " for the possible names.\n";
+            option->helpText = tmp.str();
+        }
+
+        option = &options["-lm"];
+        option->nParameters = 1;
+        option->handler = [](char **argv)
+        {
+            conf.legacyMoves = argv[1];
+            printf("Adding legacy moves from: %s\n", conf.legacyMoves);
+            return 0;
+        };
+        {
+            std::stringstream tmp;
+            tmp << "-lm file\n\n";
+            tmp << "\tA list of legacy moves to add to the moveset pools.\n\n";
+            tmp << "\tIt's a text file each line must contain the pokemon name followed by the move name as it appears in the protobuff.\n";
+            tmp << "\tSee " << POKEMON_LIST_FILE << " and " << MOVE_LIST_FILE << " for possible names.\n";
+            option->helpText = tmp.str();
+        }
+
+        option = &options["-highlightmon"];
+        option->nParameters = 1;
+        option->handler = [](char **argv)
+        {
+            auto pkmn = pokemonNameToId.find(argv[1]);
+
+            if (pkmn == pokemonNameToId.end())
+            {
+                fprintf(stderr, "No such pokemon!");
+                return 1;
+            }
+
+            conf.highlightPokemonId = pkmn->second;
+            printf("The pokemon %s will be highlighted!\n", argv[1]);
+            return 0;
+        };
+        {
+            std::stringstream tmp;
+            tmp << "-highlightmon pokemon\n\n";
+            tmp << "Shows details moveset calculation on stdout when this pokemon's moveset is calculated.\n\n";
+            tmp << "The name should be the name as it appear is the protobuff\n";
+            tmp << "See " << POKEMON_LIST_FILE << " for details.\n";
             option->helpText = tmp.str();
         }
     }
@@ -855,118 +906,27 @@ int main(int argc, char **argv)
     }
 
     // Set up legacy movesets.
-
-    addLegacyMove("CHARMELEON", "SCRATCH_FAST");
-    addLegacyMove("CHARIZARD", "WING_ATTACK_FAST");
-    addLegacyMove("CHARIZARD", "EMBER_FAST");
-    addLegacyMove("CHARIZARD", "FLAMETHROWER");
-    addLegacyMove("BUTTERFREE", "BUG_BITE_FAST");
-    addLegacyMove("BEEDRILL", "BUG_BITE_FAST");
-    addLegacyMove("PIDGEOT", "WING_ATTACK_FAST");
-    addLegacyMove("PIDGEOT", "AIR_CUTTER");
-    addLegacyMove("SPEAROW", "TWISTER");
-    addLegacyMove("FEAROW", "TWISTER");
-    addLegacyMove("EKANS", "GUNK_SHOT");
-    addLegacyMove("PIKACHU", "THUNDER");
-    addLegacyMove("RAICHU", "THUNDER_SHOCK_FAST");
-    addLegacyMove("RAICHU", "THUNDER");
-    addLegacyMove("SANDSHREW", "ROCK_TOMB");
-    addLegacyMove("NIDOKING", "FURY_CUTTER_FAST");
-    addLegacyMove("CLEFABLE", "POUND_FAST");
-    addLegacyMove("NINETALES", "EMBER_FAST");
-    addLegacyMove("NINETALES", "FLAMETHROWER");
-    addLegacyMove("NINETALES", "FIRE_BLAST");
-    addLegacyMove("ZUBAT", "SLUDGE_BOMB");
-    addLegacyMove("GOLBAT", "OMINOUS_WIND");
-    addLegacyMove("PERSIAN", "NIGHT_SLASH");
-    addLegacyMove("PRIMEAPE", "KARATE_CHOP_FAST");
-    addLegacyMove("PRIMEAPE", "CROSS_CHOP");
-    addLegacyMove("ARCANINE", "BITE_FAST");
-    addLegacyMove("ARCANINE", "BULLDOZE");
-    addLegacyMove("ARCANINE", "FLAMETHROWER");
-    addLegacyMove("POLIWHIRL", "SCALD");
-    addLegacyMove("POLIWRATH", "MUD_SHOT_FAST");
-    addLegacyMove("POLIWRATH", "SUBMISSION");
-    addLegacyMove("ALAKAZAM", "PSYCHIC");
-    addLegacyMove("ALAKAZAM", "DAZZLING_GLEAM");
-    addLegacyMove("MACHOP", "LOW_KICK_FAST");
-    addLegacyMove("MACHOKE", "CROSS_CHOP");
-    addLegacyMove("MACHAMP", "CROSS_CHOP");
-    addLegacyMove("MACHAMP", "SUBMISSION");
-    addLegacyMove("MACHAMP", "STONE_EDGE");
-    addLegacyMove("MACHAMP", "KARATE_CHOP_FAST");
-    addLegacyMove("WEEPINBELL", "RAZOR_LEAF_FAST");
-    addLegacyMove("GRAVELER", "ROCK_SLIDE");
-    addLegacyMove("GOLEM", "ANCIENT_POWER");
-    addLegacyMove("PONYTA", "FIRE_BLAST");
-    addLegacyMove("RAPIDASH", "EMBER_FAST");
-    addLegacyMove("MAGNETON", "THUNDER_SHOCK_FAST");
-    addLegacyMove("MAGNETON", "DISCHARGE");
-    addLegacyMove("FARFETCHD", "CUT_FAST");
-    addLegacyMove("DODUO", "SWIFT");
-    addLegacyMove("DODUO", "SWIFT");
-    addLegacyMove("DODRIO", "AIR_CUTTER");
-    addLegacyMove("SEEL", "AQUA_JET");
-    addLegacyMove("DEWGONG", "ICE_SHARD_FAST");
-    addLegacyMove("DEWGONG", "AQUA_JET");
-    addLegacyMove("DEWGONG", "ICY_WIND");
-    addLegacyMove("MUK", "LICK_FAST");
-    addLegacyMove("CLOYSTER", "ICY_WIND");
-    addLegacyMove("CLOYSTER", "BLIZZARD");
-    addLegacyMove("GASTLY", "SUCKER_PUNCH_FAST");
-    addLegacyMove("GASTLY", "OMINOUS_WIND");
-    addLegacyMove("HAUNTER", "LICK_FAST");
-    addLegacyMove("HAUNTER", "SHADOW_BALL");
-    addLegacyMove("GENGAR", "SHADOW_CLAW_FAST");
-    addLegacyMove("GENGAR", "DARK_PULSE");
-    addLegacyMove("ONIX", "IRON_HEAD");
-    addLegacyMove("ONIX", "ROCK_SLIDE");
-    addLegacyMove("HYPNO", "PSYSHOCK");
-    addLegacyMove("HYPNO", "SHADOW_BALL");
-    addLegacyMove("KINGLER", "MUD_SHOT_FAST");
-    addLegacyMove("VOLTORB", "SIGNAL_BEAM");
-    addLegacyMove("ELECTRODE", "TACKLE_FAST");
-    addLegacyMove("EXEGGUTOR", "ZEN_HEADBUTT_FAST");
-    addLegacyMove("EXEGGUTOR", "CONFUSION_FAST");
-    addLegacyMove("HITMONLEE", "BRICK_BREAK");
-    addLegacyMove("HITMONCHAN", "BRICK_BREAK");
-    addLegacyMove("HITMONCHAN", "ROCK_SMASH_FAST");
-    addLegacyMove("TANGELA", "POWER_WHIP");
-    addLegacyMove("SCYTHER", "STEEL_WING_FAST");
-    addLegacyMove("SCYTHER", "BUG_BUZZ");
-    addLegacyMove("JYNX", "POUND_FAST");
-    addLegacyMove("JYNX", "ICE_PUNCH");
-    addLegacyMove("PINSIR", "FURY_CUTTER_FAST");
-    addLegacyMove("PINSIR", "SUBMISSION");
-    addLegacyMove("GYARADOS", "TWISTER");
-    addLegacyMove("GYARADOS", "DRAGON_PULSE");
-    addLegacyMove("LAPRAS", "DRAGON_PULSE");
-    addLegacyMove("LAPRAS", "ICE_SHARD_FAST");
-    addLegacyMove("EEVEE", "BODY_SLAM");
-    addLegacyMove("FLAREON", "HEAT_WAVE");
-    addLegacyMove("PORYGON", "TACKLE_FAST");
-    addLegacyMove("PORYGON", "ZEN_HEADBUTT_FAST");
-    addLegacyMove("PORYGON", "DISCHARGE");
-    addLegacyMove("PORYGON", "SIGNAL_BEAM");
-    addLegacyMove("PORYGON", "PSYBEAM");
-    addLegacyMove("OMANYTE", "ROCK_TOMB");
-    addLegacyMove("OMANYTE", "BRINE");
-    addLegacyMove("OMASTAR", "ROCK_SLIDE");
-    addLegacyMove("KABUTOPS", "FURY_CUTTER_FAST");
-    addLegacyMove("SNORLAX", "BODY_SLAM");
-    addLegacyMove("DRAGONITE", "DRAGON_BREATH_FAST");
-    addLegacyMove("DRAGONITE", "DRAGON_CLAW");
-    addLegacyMove("DRAGONITE", "DRAGON_PULSE");
-
-    // Type chart
-    /*for (const auto &i : typeChart)
+    if (conf.legacyMoves)
     {
-        for (const auto &j : i.second)
+        std::ifstream ifs(conf.legacyMoves);
+
+        for (;;)
         {
-            if (j.second == 1) continue;
-            printf("(%d)%s -> (%d)%s: %g\n", i.first, typeNames[i.first].c_str(), j.first, typeNames[j.first].c_str(), j.second);
+            std::string pokemon;
+
+            if (!(ifs >> pokemon)) break; // Break out when there is no entry.
+
+            std::string legacyMove;
+
+            if (!(ifs >> legacyMove))
+            {
+                fprintf(stderr, "We have the pokemoin name but the legacy move is missing!\n");
+                return 1;
+            }
+
+            addLegacyMove(pokemon.c_str(), legacyMove.c_str());
         }
-    }*/
+    }
 
     // Pokemon by CP
     {
@@ -1013,7 +973,7 @@ int main(int argc, char **argv)
 
     // Moves list
 
-    AutoFile moves = fopen("moves.txt", "w");
+    AutoFile moves = fopen(MOVE_LIST_FILE, "w");
 
     fprintf(moves, "%-5s%-30s %-30s %-10s %-10s %-10s %-10s %-10s %-10s\n",
         "Id",
@@ -1098,7 +1058,7 @@ int main(int argc, char **argv)
                 double primaryDamage = 0;
                 double secondaryDamage = 0;
 
-                int expectedHitsPerTurn = floor((conf.roundLength - 0.5) / fastMove.duration);
+                int expectedHitsPerTurn = floor((conf.roundLength - 0.49) / fastMove.duration);
                 bool dodging = expectedHitsPerTurn > 0;
 
                 if (!dodging) continue;
