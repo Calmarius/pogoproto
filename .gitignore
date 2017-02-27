@@ -1,6 +1,6 @@
 *
 !*.cpp
-!README
+!README.md
 !.gitignore
 !filtered.conf
 !legacy.conf
