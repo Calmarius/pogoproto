@@ -347,18 +347,19 @@ struct MovesetDPS
     double truePower; // Moveset DPS * trueStrength
     double prestigePower; // Moveset DPS * prestigePotential
     int fastAttacksPerTurn;
+    int nChargedUsed;
 
-    void populate(const double rawDPS, const PokemonInfo &pi)
+    void populate(double rawDPS, double prestigerDPS, const PokemonInfo &pi)
     {
         msDPS = rawDPS;
         DPS = rawDPS * (pi.baseAtk + 15);
         truePower = rawDPS * pi.trueStrength * (dodging ? 1 : 0.25);
-        prestigePower = rawDPS * pi.trueStrength * pow(pi.prestigerCPMultiplier, 3);
+        prestigePower = prestigerDPS * pi.trueStrength * pow(pi.prestigerCPMultiplier, 3);
     }
 
     void printEntry(FILE *f, double value) const
     {
-        fprintf(f, "- %s: %s + %s : %g  (msDPS: %g) %s %s (Fast attacks per turn: %d)\n",
+        fprintf(f, "- %s: %s + %s : %g  (msDPS: %g) %s %s (Fast attacks per turn: %d, Number of chargeds used: %d)\n",
             normalizeName(pokemonList[pokemonId].name).c_str(),
             normalizeName(removeFast(moveList[fastId].name)).c_str(),
             normalizeName(moveList[chargedId].name).c_str(),
@@ -366,7 +367,8 @@ struct MovesetDPS
             msDPS,
             isLegacy ? "(*)" : "",
             dodging ? "" : "(cannot dodge)",
-            fastAttacksPerTurn
+            fastAttacksPerTurn,
+            nChargedUsed
         );
     }
 };
@@ -457,7 +459,7 @@ struct Config
     double prestigerCP; // The desired CP of the prestiger.
     const char *filteredPokemon; // List of pokemon to filter out. eg. legendaries or other unobtainable stuff.
     const char *legacyMoves; // File containing legacy moves.
-    int highlightPokemonId; // Pokemon to highlight and write more stats to stdout when dumping.
+    const char *highlightPokemonName; // Pokemon to highlight and write more stats to stdout when dumping.
 
     Config()
     {
@@ -467,7 +469,7 @@ struct Config
         prestigerCP = 1500;
         filteredPokemon = NULL;
         legacyMoves = NULL;
-        highlightPokemonId = -1;
+        highlightPokemonName = NULL;
     }
 } conf;
 
@@ -491,6 +493,121 @@ void printHelp()
     {
         puts(opt.second.helpText.c_str());
     }
+}
+
+struct DamageInfo
+{
+    double primaryDPS;
+    double secondaryDPS;
+    double time;
+    int expectedHitsPerTurn;
+    int chargedsUsed;
+};
+
+DamageInfo calculateDPS(const PokemonInfo &pi, const MoveInfo &fastMove, const MoveInfo &chargedMove, double cpMultiplier, bool highlighted)
+{
+    double energy = 0;
+
+    DamageInfo dmg;
+
+    dmg.time = 0;
+    double primaryDamage = 0;
+    double secondaryDamage = 0;
+
+    double damage = 0;
+
+    dmg.expectedHitsPerTurn = floor((conf.roundLength - 0.49) / fastMove.duration);
+    bool dodging = dmg.expectedHitsPerTurn > 0;
+
+    double extraEnergy = 0.5*((pi.baseStamina + 15) * cpMultiplier);
+
+    if (highlighted)
+    {
+        printf("\n\n%s with moveset: %s + %s\n", pi.name.c_str(), fastMove.name.c_str(), chargedMove.name.c_str());
+        printf("extraEnergy: %g\n", extraEnergy);
+        printf("ExpectedHitsPerTurn: %d\n", dmg.expectedHitsPerTurn);
+    }
+
+    dmg.chargedsUsed = 0;
+
+    while (dmg.time < conf.battleTime)
+    {
+        const MoveInfo *moveToUse;
+        double *damageToRaise;
+        double stab = 1;
+        int nConsecutiveHits;
+        double remTime;
+
+        if (energy >= -chargedMove.energy)
+        {
+            // Do charged move.
+            moveToUse = &chargedMove;
+            damageToRaise = &secondaryDamage;
+            nConsecutiveHits = 1;
+            dmg.chargedsUsed++;
+        }
+        else
+        {
+            // Do fast move
+            moveToUse = &fastMove;
+            damageToRaise = &primaryDamage;
+            remTime = conf.roundLength - fmod(dmg.time, conf.roundLength);
+            if (dodging)
+            {
+                nConsecutiveHits = floor(remTime / fastMove.duration);
+                if (nConsecutiveHits > dmg.expectedHitsPerTurn) nConsecutiveHits = dmg.expectedHitsPerTurn;
+            }
+            else
+            {
+                nConsecutiveHits = 1;
+            }
+        }
+
+        for (int tid : pi.pokemonTypes)
+        {
+            if (moveToUse->moveType == tid)
+            {
+                stab = 1.25;
+                break;
+            }
+        }
+
+        damage += moveToUse->power * stab * nConsecutiveHits;
+        *damageToRaise += moveToUse->power * stab * nConsecutiveHits;
+        dmg.time += moveToUse->duration * nConsecutiveHits;
+        energy += moveToUse->energy * nConsecutiveHits;
+        energy += (moveToUse->duration / conf.battleTime) * extraEnergy * nConsecutiveHits;
+        if (energy > 100) energy = 100;
+        if (highlighted)
+        {
+            printf("%s used %s %d times (damage: %g, energy: %d, staminaEnergy: %g)\n",
+                pi.name.c_str(),
+                moveToUse->name.c_str(),
+                nConsecutiveHits,
+                moveToUse->power,
+                moveToUse->energy,
+                (moveToUse->duration / conf.battleTime) * extraEnergy
+            );
+            printf("t: %g, primary dmg: %g, secondary dmg: %g, energy: %g\n", dmg.time, primaryDamage, secondaryDamage, energy);
+        }
+        if (dodging && moveToUse == &fastMove)
+        {
+            remTime -= moveToUse->duration * nConsecutiveHits;
+            if (remTime < 0.5) remTime = 0.5;
+            dmg.time += remTime; // Time spent dodging.
+            if (highlighted)
+            {
+                printf("Then dodged for %g seconds.\n", remTime);
+                printf("t: %g, primary dmg: %g, secondary dmg: %g, energy: %g\n", dmg.time, primaryDamage, secondaryDamage, energy);
+            }
+        }
+        //fgetc(stdin);
+    }
+
+    dmg.primaryDPS = primaryDamage / dmg.time;
+    dmg.secondaryDPS = secondaryDamage / dmg.time;
+
+    return dmg;
 }
 
 int main(int argc, char **argv)
@@ -603,24 +720,16 @@ int main(int argc, char **argv)
         option->nParameters = 1;
         option->handler = [](char **argv)
         {
-            auto pkmn = pokemonNameToId.find(argv[1]);
-
-            if (pkmn == pokemonNameToId.end())
-            {
-                fprintf(stderr, "No such pokemon!");
-                return 1;
-            }
-
-            conf.highlightPokemonId = pkmn->second;
-            printf("The pokemon %s will be highlighted!\n", argv[1]);
+            conf.highlightPokemonName = argv[1];
+            printf("The pokemon %s will be highlighted if exists!\n", argv[1]);
             return 0;
         };
         {
             std::stringstream tmp;
             tmp << "-highlightmon pokemon\n\n";
-            tmp << "Shows details moveset calculation on stdout when this pokemon's moveset is calculated.\n\n";
-            tmp << "The name should be the name as it appear is the protobuff\n";
-            tmp << "See " << POKEMON_LIST_FILE << " for details.\n";
+            tmp << "\tShows details moveset calculation on stdout when this pokemon's moveset is calculated.\n\n";
+            tmp << "\tThe name should be the name as it appear is the protobuff\n";
+            tmp << "\tSee " << POKEMON_LIST_FILE << " for details.\n";
             option->helpText = tmp.str();
         }
     }
@@ -1042,6 +1151,8 @@ int main(int argc, char **argv)
 
         std::vector<MovesetDPS> pokemonMovesets; // Movesets of the pokémon.
 
+        bool highlighted = (conf.highlightPokemonName) && (pi.name == conf.highlightPokemonName);
+
         // For each moveset combination...
         for (size_t i = 0; i < pi.fastMoves.size(); i++)
         {
@@ -1049,102 +1160,34 @@ int main(int argc, char **argv)
             for (size_t j = 0; j < pi.chargedMoves.size(); j++)
             {
                 int cmi = pi.chargedMoves[j];
-                // Simulate hitting a punching bag for 1000 seconds.
+                // Simulate hitting a punching bag for conf.battleTime seconds.
                 MoveInfo &fastMove = moveList[fmi];
                 MoveInfo &chargedMove = moveList[cmi];
-                double energy = 0;
-                double time = 0;
-                double damage = 0;
-                double primaryDamage = 0;
-                double secondaryDamage = 0;
 
-                int expectedHitsPerTurn = floor((conf.roundLength - 0.49) / fastMove.duration);
-                bool dodging = expectedHitsPerTurn > 0;
+                DamageInfo dmg = calculateDPS(pi, fastMove, chargedMove, ATTACKER_CPM, highlighted);
+                DamageInfo dmgPrestiger = calculateDPS(pi, fastMove, chargedMove, pi.prestigerCPMultiplier, highlighted);
 
-                if (!dodging) continue;
-
-                //printf("ExpectedHitsPerTurn: %d\n", expectedHitsPerTurn);
-
+                bool dodging = dmg.expectedHitsPerTurn > 0;
                 bool legacy = (i >= pi.nAvailableFastMoves) || (j >= pi.nAvailableChargedMoves);
 
-                double extraEnergy = 0.5*((pi.baseStamina + 15) * ATTACKER_CPM);
-
-                //printf("extraEnergy: %g\n", extraEnergy);
-
-                while (time < conf.battleTime)
-                {
-                    MoveInfo *moveToUse;
-                    double *damageToRaise;
-                    double stab = 1;
-                    int nConsecutiveHits;
-                    double remTime;
-
-                    if (energy >= -chargedMove.energy)
-                    {
-                        // Do charged move.
-                        moveToUse = &chargedMove;
-                        damageToRaise = &secondaryDamage;
-                        nConsecutiveHits = 1;
-                    }
-                    else
-                    {
-                        // Do fast move
-                        moveToUse = &fastMove;
-                        damageToRaise = &primaryDamage;
-                        remTime = conf.roundLength - fmod(time, conf.roundLength);
-                        if (dodging)
-                        {
-                            nConsecutiveHits = floor(remTime / fastMove.duration);
-                            if (nConsecutiveHits > expectedHitsPerTurn) nConsecutiveHits = expectedHitsPerTurn;
-                        }
-                        else
-                        {
-                            nConsecutiveHits = 1;
-                        }
-                    }
-
-                    for (int tid : pi.pokemonTypes)
-                    {
-                        if (moveToUse->moveType == tid)
-                        {
-                            stab = 1.25;
-                            break;
-                        }
-                    }
-
-                    damage += moveToUse->power * stab * nConsecutiveHits;
-                    *damageToRaise += moveToUse->power * stab * nConsecutiveHits;
-                    time += moveToUse->duration * nConsecutiveHits;
-                    energy += moveToUse->energy * nConsecutiveHits;
-                    energy += (moveToUse->duration / conf.battleTime) * extraEnergy * nConsecutiveHits;
-                    if (energy > 100) energy = 100;
-                    //printf("%s used %s %d times (damage: %g, energy: %d, staminaEnergy: %g)\n", pi.name.c_str(), moveToUse->name.c_str(), nConsecutiveHits, moveToUse->power, moveToUse->energy, (moveToUse->duration / BATTLE_TIME) * extraEnergy);
-                    //printf("t: %g, primary dmg: %g, secondary dmg: %g, energy: %g\n", time, primaryDamage, secondaryDamage, energy);
-                    if (dodging && moveToUse == &fastMove)
-                    {
-                        remTime -= moveToUse->duration * nConsecutiveHits;
-                        if (remTime < 0.5) remTime = 0.5;
-                        time += remTime; // Time spent dodging.
-                        //printf("Then dodged for %g seconds.\n", remTime);
-                        //printf("t: %g, primary dmg: %g, secondary dmg: %g, energy: %g\n", time, primaryDamage, secondaryDamage, energy);
-                    }
-                    //fgetc(stdin);
-                }
+                if (!dodging) continue;
 
                 MovesetDPS mDPS;
 
                 // Get the overall DPS.
-                double rawDps = damage / time;
+                double rawDps = dmg.primaryDPS + dmg.secondaryDPS;
+                double prestigeDps = dmgPrestiger.primaryDPS + dmgPrestiger.secondaryDPS;
 
                 /* printf("Moveset DPS: %g\n", rawDps); */
 
                 mDPS.pokemonId = kv.first;
                 mDPS.fastId = fmi;
                 mDPS.chargedId = cmi;
-                mDPS.populate(rawDps, pi);
+                mDPS.populate(rawDps, prestigeDps, pi);
                 mDPS.isLegacy = legacy;
                 mDPS.dodging = dodging;
-                mDPS.fastAttacksPerTurn = expectedHitsPerTurn;
+                mDPS.fastAttacksPerTurn = dmg.expectedHitsPerTurn;
+                mDPS.nChargedUsed = dmg.chargedsUsed;
 
                 // Store them for the pokémon and the overall bucket.
                 pokemonMovesets.push_back(mDPS);
@@ -1159,14 +1202,13 @@ int main(int argc, char **argv)
                 }
                 else
                 {
-                    // FIXME: Copypaste
                     // Fast and charged are different.
                     MovesetDPS primaryDPS = mDPS;
-                    primaryDPS.populate(primaryDamage / time, pi);
+                    primaryDPS.populate(dmg.primaryDPS, dmgPrestiger.primaryDPS, pi);
                     movesetStatsByType[fastMove.moveType].push_back(primaryDPS);
 
                     MovesetDPS secondaryDPS = mDPS;
-                    secondaryDPS.populate(secondaryDamage / time, pi);
+                    secondaryDPS.populate(dmg.secondaryDPS, dmgPrestiger.secondaryDPS, pi);
                     movesetStatsByType[chargedMove.moveType].push_back(secondaryDPS);
                 }
 
@@ -1178,22 +1220,28 @@ int main(int argc, char **argv)
                         if (tnp1.first > tnp2.first) continue; // To avoid duplicates.
 
                         // Find out how much damage each moveset does against each combination of moves.
-                        double theDamage;
+                        double theDPS;
+                        double thePrestigerDPS;
 
                         if (tnp1.first == tnp2.first)
                         {
                             // Single typed pokémon are stored as double typed of the same type. Mind this.
-                            theDamage = primaryDamage * typeChart[fastMove.moveType][tnp1.first]
-                            + secondaryDamage * typeChart[chargedMove.moveType][tnp1.first];
+                            theDPS = dmg.primaryDPS * typeChart[fastMove.moveType][tnp1.first]
+                            + dmg.secondaryDPS * typeChart[chargedMove.moveType][tnp1.first];
+                            thePrestigerDPS = dmgPrestiger.primaryDPS * typeChart[fastMove.moveType][tnp1.first]
+                            + dmgPrestiger.secondaryDPS * typeChart[chargedMove.moveType][tnp1.first];
                         }
                         else
                         {
-                            theDamage =
-                                primaryDamage * typeChart[fastMove.moveType][tnp1.first] * typeChart[fastMove.moveType][tnp2.first]
-                                + secondaryDamage * typeChart[chargedMove.moveType][tnp1.first] * typeChart[chargedMove.moveType][tnp2.first];
+                            theDPS =
+                                dmg.primaryDPS * typeChart[fastMove.moveType][tnp1.first] * typeChart[fastMove.moveType][tnp2.first]
+                                + dmg.secondaryDPS * typeChart[chargedMove.moveType][tnp1.first] * typeChart[chargedMove.moveType][tnp2.first];
+                            thePrestigerDPS =
+                                dmgPrestiger.primaryDPS * typeChart[fastMove.moveType][tnp1.first] * typeChart[fastMove.moveType][tnp2.first]
+                                + dmgPrestiger.secondaryDPS * typeChart[chargedMove.moveType][tnp1.first] * typeChart[chargedMove.moveType][tnp2.first];
                         }
                         MovesetDPS dps = mDPS;
-                        dps.populate(theDamage / time, pi);
+                        dps.populate(theDPS, thePrestigerDPS, pi);
                         bestCounters[tnp1.first][tnp2.first].push_back(dps);
                     }
                 }
@@ -1344,6 +1392,7 @@ int main(int argc, char **argv)
         }
     }
 
+    printf("TXT files with various stats has been written.\n");
 
     return 0;
 }
