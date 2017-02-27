@@ -682,7 +682,7 @@ int main(int argc, char **argv)
             option->helpText = tmp.str();
         }
 
-        option = &options["-filtered"];
+        option = &options["-filt"];
         option->nParameters = 1;
         option->handler = [](char **argv)
         {
@@ -692,7 +692,7 @@ int main(int argc, char **argv)
         };
         {
             std::stringstream tmp;
-            tmp << "-filtered file\n\n";
+            tmp << "-filt file\n\n";
             tmp << "\tList of pokemon to filter out.\n\n";
             tmp << "\tYou should use the same names as it appears in the protobuff (usually uppercase), separated by whitespace.\n";
             tmp << "\tSee " << POKEMON_LIST_FILE << " for the possible names.\n";
@@ -716,7 +716,7 @@ int main(int argc, char **argv)
             option->helpText = tmp.str();
         }
 
-        option = &options["-highlightmon"];
+        option = &options["-hlm"];
         option->nParameters = 1;
         option->handler = [](char **argv)
         {
@@ -726,7 +726,7 @@ int main(int argc, char **argv)
         };
         {
             std::stringstream tmp;
-            tmp << "-highlightmon pokemon\n\n";
+            tmp << "-hlm pokemon\n\n";
             tmp << "\tShows details moveset calculation on stdout when this pokemon's moveset is calculated.\n\n";
             tmp << "\tThe name should be the name as it appear is the protobuff\n";
             tmp << "\tSee " << POKEMON_LIST_FILE << " for details.\n";
