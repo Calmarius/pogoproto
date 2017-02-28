@@ -455,7 +455,8 @@ struct Config
 {
     const char *gameMasterFile;
     double roundLength; // How often the opponent strikes.
-    double battleTime; // How long life assumed.
+    double lifeTime; // How long life assumed.
+    double battleTime; // Length of the battle;
     double prestigerCP; // The desired CP of the prestiger.
     const char *filteredPokemon; // List of pokemon to filter out. eg. legendaries or other unobtainable stuff.
     const char *legacyMoves; // File containing legacy moves.
@@ -465,6 +466,7 @@ struct Config
     {
         gameMasterFile = NULL;
         roundLength = 2.5;
+        lifeTime = 100;
         battleTime = 100;
         prestigerCP = 1500;
         filteredPokemon = NULL;
@@ -486,6 +488,7 @@ std::map<std::string, Option> options;
 
 void printHelp()
 {
+    printf("Pokémon GO protobuff analyzer. It takes the Pokémon GO protobuff file located on your phone, and output some analysis files into TXT files.\n\n");
     printf("USAGE:\n\npogoproto filename [options]\n\n");
     printf("OPTIONS:\n\n");
 
@@ -576,7 +579,7 @@ DamageInfo calculateDPS(const PokemonInfo &pi, const MoveInfo &fastMove, const M
         *damageToRaise += moveToUse->power * stab * nConsecutiveHits;
         dmg.time += moveToUse->duration * nConsecutiveHits;
         energy += moveToUse->energy * nConsecutiveHits;
-        energy += (moveToUse->duration / conf.battleTime) * extraEnergy * nConsecutiveHits;
+        energy += (moveToUse->duration / conf.lifeTime) * extraEnergy * nConsecutiveHits;
         if (energy > 100) energy = 100;
         if (highlighted)
         {
@@ -586,7 +589,7 @@ DamageInfo calculateDPS(const PokemonInfo &pi, const MoveInfo &fastMove, const M
                 nConsecutiveHits,
                 moveToUse->power,
                 moveToUse->energy,
-                (moveToUse->duration / conf.battleTime) * extraEnergy
+                (moveToUse->duration / conf.lifeTime) * extraEnergy
             );
             printf("t: %g, primary dmg: %g, secondary dmg: %g, energy: %g\n", dmg.time, primaryDamage, secondaryDamage, energy);
         }
@@ -648,20 +651,20 @@ int main(int argc, char **argv)
             option->helpText = tmp.str();
         }
 
-        option = &options["-bt"];
+        option = &options["-lt"];
         option->nParameters = 1;
         option->handler = [](char **argv)
         {
-            conf.battleTime = strtol(argv[1], NULL, 10);
-            printf("Using battle time: %g\n", conf.battleTime);
+            conf.lifeTime = strtol(argv[1], NULL, 10);
+            printf("Using life time: %g\n", conf.lifeTime);
             return 0;
         };
         {
             std::stringstream tmp;
-            tmp << "-bt battleTime\n\n";
+            tmp << "-lt lifeTime\n\n";
             tmp << "\tSpecify how long lifetime do you expect for your pokémon during battle.\n\n";
             tmp << "\tThis is important when dealing with the energy received from the damage your pokémon take.\n";
-            tmp << "\tDefault: " << conf.battleTime << "\n";
+            tmp << "\tDefault: " << conf.lifeTime << "\n";
             option->helpText = tmp.str();
         }
 
@@ -730,6 +733,22 @@ int main(int argc, char **argv)
             tmp << "\tShows details moveset calculation on stdout when this pokemon's moveset is calculated.\n\n";
             tmp << "\tThe name should be the name as it appear is the protobuff\n";
             tmp << "\tSee " << POKEMON_LIST_FILE << " for details.\n";
+            option->helpText = tmp.str();
+        }
+
+        option = &options["-bt"];
+        option->nParameters = 1;
+        option->handler = [](char **argv)
+        {
+            conf.battleTime = strtod(argv[1], NULL);
+            printf("Using battle time: %g\n", conf.battleTime);
+            return 0;
+        };
+        {
+            std::stringstream tmp;
+            tmp << "-bt battleTime\n\n";
+            tmp << "\tSets the battle time. The moveset simulation runs for the specified time.\n\n";
+            tmp << "\tThe default is " << conf.battleTime << ".\n";
             option->helpText = tmp.str();
         }
     }
@@ -1050,6 +1069,7 @@ int main(int argc, char **argv)
 
         {
             AutoFile cpFile = fopen("cplist.txt", "w");
+            fprintf(cpFile, "Highest CP\n\n");
 
             for (const auto &pi : pis)
             {
@@ -1061,6 +1081,7 @@ int main(int argc, char **argv)
 
         {
             AutoFile tankinessFile = fopen("tankiness.txt", "w");
+            fprintf(tankinessFile, "Highest effective HP (Defense * Stamina)\n\n");
 
             for (const auto &pi : pis)
             {
@@ -1072,6 +1093,7 @@ int main(int argc, char **argv)
 
         {
             AutoFile trueStrengthFile = fopen("truestrength.txt", "w");
+            fprintf(trueStrengthFile, "Best Defense*Attackl*Stamina\n\n");
 
             for (const auto &pi : pis)
             {
@@ -1160,7 +1182,7 @@ int main(int argc, char **argv)
             for (size_t j = 0; j < pi.chargedMoves.size(); j++)
             {
                 int cmi = pi.chargedMoves[j];
-                // Simulate hitting a punching bag for conf.battleTime seconds.
+                // Simulate hitting a punching bag for conf.lifeTime seconds.
                 MoveInfo &fastMove = moveList[fmi];
                 MoveInfo &chargedMove = moveList[cmi];
 
@@ -1259,6 +1281,7 @@ int main(int argc, char **argv)
 
     // Write the overall DPS list.
     AutoFile dpsList = fopen("DPS.txt", "w");
+    fprintf(dpsList, "Highest damage per second (moveset DPS * Attack)\n\n");
     std::sort(overallMovesetStats.begin(), overallMovesetStats.end(), [](MovesetDPS a, MovesetDPS b){return a.DPS > b.DPS; });
     for (const auto &mdps : overallMovesetStats)
     {
@@ -1267,6 +1290,7 @@ int main(int argc, char **argv)
 
     // Write the true power list.
     AutoFile dtfList = fopen("DTF.txt", "w");
+    fprintf(dtfList, "Highest damage till fainting (moveset DPS * Attack * Defense * Stamina)\n\n");
     std::sort(overallMovesetStats.begin(), overallMovesetStats.end(), [](MovesetDPS a, MovesetDPS b){return a.truePower > b.truePower; });
     for (const auto &mdps : overallMovesetStats)
     {
@@ -1275,6 +1299,7 @@ int main(int argc, char **argv)
 
     // Best DPS by Type
     AutoFile bestAttackersByType = fopen("DPSbyType.txt", "w");
+    fprintf(bestAttackersByType, "Highest damage per second per type\n\n");
     for (auto &typeVecPair : movesetStatsByType)
     {
         auto &typeVec = typeVecPair.second;
@@ -1294,6 +1319,7 @@ int main(int argc, char **argv)
 
     // Write best true power by type.
     AutoFile bestDTFByType = fopen("DTFbyType.txt", "w");
+    fprintf(bestDTFByType, "Highest damage tilll fainting per type\n\n");
     for (auto &typeVecPair : movesetStatsByType)
     {
         auto &typeVec = typeVecPair.second;
@@ -1313,6 +1339,7 @@ int main(int argc, char **argv)
 
     // Write best counters by DPS
     AutoFile bestDPSCountersFile = fopen("DPSCounters.txt", "w");
+    fprintf(bestDPSCountersFile, "Best DPS against particular types.\n\n");
     for (auto &t1 : bestCounters)
     {
         for (auto &t2 : t1.second)
@@ -1340,6 +1367,7 @@ int main(int argc, char **argv)
 
     // Write Best counters by True power
     AutoFile bestDTFCountersFile = fopen("DTFCounters.txt", "w");
+    fprintf(bestDTFCountersFile, "Best DTF against particular types.\n\n");
     for (auto &t1 : bestCounters)
     {
         for (auto &t2 : t1.second)
@@ -1367,6 +1395,7 @@ int main(int argc, char **argv)
 
     // Best prestigers
     AutoFile prestigersFile = fopen("prestigers.txt", "w");
+    fprintf(prestigersFile, "Best prestigers against particular types.\n\n");
     for (auto &t1 : bestCounters)
     {
         for (auto &t2 : t1.second)
